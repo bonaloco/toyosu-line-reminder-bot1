@@ -18,7 +18,7 @@ GROUP_ID = os.getenv("GROUP_ID")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 週間予定表保存用
+# スケジュール保存用
 weekly_schedule = {}
 
 def parse_schedule(text):
@@ -82,7 +82,7 @@ def handle_message(event):
     global weekly_schedule
     text = event.message.text
 
-    # ✅ sys.stderr.write()で確実にログに出す
+    # sys.stderrにグループログを出力（確実にログに表示させる）
     sys.stderr.write("===================\n")
     sys.stderr.write(f"source.type = {event.source.type}\n")
     if event.source.type == "group":
@@ -91,15 +91,14 @@ def handle_message(event):
         sys.stderr.write("これはグループではありません\n")
     sys.stderr.write("===================\n")
 
+    # 週間予定表の4ワードすべてを含むかチェック
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
         reply = "週間予定表を登録しました！"
-    else:
-        reply = "週間予定表ではないメッセージを受信しました。"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+    # それ以外は無視（返信なし）
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
-# 毎朝7:30リマインド（日本時間）
+# 朝7:30に自動リマインド送信（日本時間）
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.start()
