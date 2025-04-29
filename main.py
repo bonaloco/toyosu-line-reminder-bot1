@@ -84,6 +84,9 @@ def callback():
 def handle_message(event):
     global weekly_schedule
     text = event.message.text
+    print(f"Source Type: {event.source.type}")
+    if event.source.type == "group":
+        print(f"Group ID: {event.source.group_id}")
     if "救急" in text and "AM院内" in text and "PM院内" in text and "残り番" in text:
         weekly_schedule = parse_schedule(text)
         reply = "週間予定表を登録しました！"
