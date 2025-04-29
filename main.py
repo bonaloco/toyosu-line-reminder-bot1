@@ -9,7 +9,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 環境変数読み込み
+# 環境変数
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")
@@ -17,9 +17,10 @@ GROUP_ID = os.getenv("GROUP_ID")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 予定表保存
+# スケジュール格納用変数
 weekly_schedule = {}
 
+# 週間予定表のテキストを辞書に変換
 def parse_schedule(text):
     sections = {'救急': [], 'AM院内': [], 'PM院内': [], '残り番': []}
     current_section = None
@@ -34,9 +35,10 @@ def parse_schedule(text):
             sections[current_section].append(line)
     return sections
 
+# 今日の担当者を抽出
 def get_today_assignment(sections):
     today = datetime.datetime.now()
-    weekday = today.weekday()
+    weekday = today.weekday()  # 0=月, 6=日
     assignment = {}
     for key in ['救急', 'AM院内', 'PM院内']:
         assignment[key] = sections.get(key, ["未設定"])[weekday] if weekday < len(sections.get(key, [])) else "未設定"
@@ -47,6 +49,7 @@ def get_today_assignment(sections):
         assignment['残り番'] = ("未設定", "未設定")
     return assignment
 
+# 担当者情報を文字列に整形
 def create_reminder(assignments):
     if not assignments:
         return "本日はリマインド対象日ではありません。"
@@ -59,6 +62,7 @@ def create_reminder(assignments):
     message += "よろしくお願いします！"
     return message
 
+# 毎朝の送信処理
 def daily_reminder():
     if not weekly_schedule:
         print("予定表未登録")
@@ -66,6 +70,7 @@ def daily_reminder():
     msg = create_reminder(get_today_assignment(weekly_schedule))
     line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
 
+# LINE Webhookエンドポイント
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers["X-Line-Signature"]
@@ -76,20 +81,22 @@ def callback():
         abort(400)
     return "OK"
 
+# LINEメッセージ受信時の処理
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     global weekly_schedule
     text = event.message.text
 
-    # ✅ イベントの内容をすべて表示（ここが重要！）
+    # ✅ groupIdを確実に出力する部分
     print("===================")
-    print("【イベント全体の中身】")
-    try:
-        print(json.dumps(event.__dict__, indent=2, default=str))
-    except Exception as e:
-        print(f"ログ出力時のエラー: {e}")
+    print(f"source.type = {event.source.type}")
+    if event.source.type == "group":
+        print(f"✅ Group ID = {event.source.group_id}")
+    else:
+        print("これはグループではありません")
     print("===================")
 
+    # 予定表かどうか判定
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
         reply = "週間予定表を登録しました！"
@@ -98,11 +105,12 @@ def handle_message(event):
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-# 7:30リマインド
+# 毎朝7:30にリマインド送信（日本時間）
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.start()
 
+# Flaskアプリ起動
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
