@@ -1,14 +1,15 @@
+import os
+import json
+import datetime
 from flask import Flask, request, abort
+from apscheduler.schedulers.background import BackgroundScheduler
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from apscheduler.schedulers.background import BackgroundScheduler
-import os
-import datetime
 
 app = Flask(__name__)
 
-# 環境変数からトークン類を読み込み
+# 環境変数からLINE情報を取得
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")
@@ -16,7 +17,7 @@ GROUP_ID = os.getenv("GROUP_ID")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 簡易的に予定表保存（本番ではDBに置き換え可）
+# 週間予定表保存用（本番ならDB管理推奨）
 weekly_schedule = {}
 
 def parse_schedule(text):
@@ -46,7 +47,7 @@ def get_today_assignment(sections):
         assignment[key] = sections.get(key, ["未設定"])[weekday] if weekday < len(sections.get(key, [])) else "未設定"
     idx = weekday * 2
     if idx + 1 < len(sections.get('残り番', [])):
-        assignment['残り番'] = (sections['残り番'][idx], sections['残り番'][idx+1])
+        assignment['残り番'] = (sections['残り番'][idx], sections['残り番'][idx + 1])
     else:
         assignment['残り番'] = ("未設定", "未設定")
     return assignment
@@ -85,15 +86,11 @@ def handle_message(event):
     global weekly_schedule
     text = event.message.text
 
-    # --- ここをさらに強力に変更する！ ---
+    # --- イベント情報を完全にprint ---
     print("===================")
-    print(f"Event source type: {event.source.type}")
-    if event.source.type == "group":
-        print(f"👉 Group ID detected: {event.source.group_id}")
-    else:
-        print("This is not a group message")
+    print("【イベント全体の中身】")
+    print(json.dumps(event.__dict__, indent=2, default=str))
     print("===================")
-    # --- ここまで追加！ ---
 
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
@@ -103,8 +100,7 @@ def handle_message(event):
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-
-# 朝7:30に自動実行（日本時間）
+# 朝7:30にリマインド送信（日本時間）
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.start()
