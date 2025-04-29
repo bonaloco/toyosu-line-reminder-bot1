@@ -9,7 +9,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 環境変数からLINE情報を取得
+# 環境変数読み込み
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")
@@ -17,16 +17,11 @@ GROUP_ID = os.getenv("GROUP_ID")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 週間予定表保存用（本番ならDB管理推奨）
+# 予定表保存
 weekly_schedule = {}
 
 def parse_schedule(text):
-    sections = {
-        '救急': [],
-        'AM院内': [],
-        'PM院内': [],
-        '残り番': []
-    }
+    sections = {'救急': [], 'AM院内': [], 'PM院内': [], '残り番': []}
     current_section = None
     for line in text.split("\n"):
         line = line.strip()
@@ -86,10 +81,13 @@ def handle_message(event):
     global weekly_schedule
     text = event.message.text
 
-    # --- イベント情報を完全にprint ---
+    # ✅ イベントの内容をすべて表示（ここが重要！）
     print("===================")
     print("【イベント全体の中身】")
-    print(json.dumps(event.__dict__, indent=2, default=str))
+    try:
+        print(json.dumps(event.__dict__, indent=2, default=str))
+    except Exception as e:
+        print(f"ログ出力時のエラー: {e}")
     print("===================")
 
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
@@ -100,7 +98,7 @@ def handle_message(event):
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-# 朝7:30にリマインド送信（日本時間）
+# 7:30リマインド
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.start()
