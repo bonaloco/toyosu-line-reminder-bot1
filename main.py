@@ -60,12 +60,35 @@ def create_reminder(assignments):
     message += "よろしくお願いします！"
     return message
 
+def create_weekly_summary(sections):
+    if not sections:
+        return "まだ週間予定表が登録されていません。"
+    days = ["月", "火", "水", "木", "金", "土", "日"]
+    message = "【今週の予定】\n\n"
+    for i, day in enumerate(days):
+        message += f"{day}曜:\n"
+        message += f" 救急(リハ診)：{sections['救急'][i] if i < len(sections['救急']) else '未設定'}\n"
+        message += f" AM院内：{sections['AM院内'][i] if i < len(sections['AM院内']) else '未設定'}\n"
+        message += f" PM院内：{sections['PM院内'][i] if i < len(sections['PM院内']) else '未設定'}\n"
+        if i*2+1 < len(sections['残り番']):
+            first = sections['残り番'][i*2] if i*2 < len(sections['残り番']) else "未設定"
+            second = sections['残り番'][i*2+1] if i*2+1 < len(sections['残り番']) else "未設定"
+            message += f" 残り番：1st {first} ／ 2nd {second}\n"
+        else:
+            message += f" 残り番：未設定\n"
+        message += "\n"
+    return message
+
 def daily_reminder():
     if not weekly_schedule:
         sys.stderr.write("予定表未登録\n")
         return
     msg = create_reminder(get_today_assignment(weekly_schedule))
     line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
+
+def weekly_request_reminder():
+    message = "【お知らせ】\n来週分の週間予定表を入力してください！"
+    line_bot_api.push_message(GROUP_ID, TextSendMessage(text=message))
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -82,7 +105,6 @@ def handle_message(event):
     global weekly_schedule
     text = event.message.text
 
-    # sys.stderrにグループログを出力（確実にログに表示させる）
     sys.stderr.write("===================\n")
     sys.stderr.write(f"source.type = {event.source.type}\n")
     if event.source.type == "group":
@@ -91,16 +113,25 @@ def handle_message(event):
         sys.stderr.write("これはグループではありません\n")
     sys.stderr.write("===================\n")
 
-    # 週間予定表の4ワードすべてを含むかチェック
+    # 週間予定表登録
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
         reply = "週間予定表を登録しました！"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-    # それ以外は無視（返信なし）
+    
+    # 「今週の予定を確認」と言われたら返信
+    elif '今週の予定を確認' in text:
+        summary = create_weekly_summary(weekly_schedule)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=summary))
+    
+    # それ以外は無視
+    else:
+        pass
 
-# 朝7:30に自動リマインド送信（日本時間）
+# スケジューラ起動
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
+scheduler.add_job(weekly_request_reminder, 'cron', day_of_week='sun', hour=19, minute=0)
 scheduler.start()
 
 if __name__ == "__main__":
