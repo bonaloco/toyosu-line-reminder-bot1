@@ -113,20 +113,31 @@ def handle_message(event):
         sys.stderr.write("これはグループではありません\n")
     sys.stderr.write("===================\n")
 
-    # 週間予定表登録
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
         reply = "週間予定表を登録しました！"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-    
-    # 「今週の予定を確認」と言われたら返信
     elif '今週の予定を確認' in text:
         summary = create_weekly_summary(weekly_schedule)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=summary))
-    
-    # それ以外は無視
     else:
         pass
+
+# Wakeup ping
+@app.route("/", methods=["GET"])
+def wakeup():
+    return "I'm awake!", 200
+
+# テスト用手動リマインドエンドポイント
+@app.route("/test-reminder", methods=["GET"])
+def test_reminder():
+    daily_reminder()
+    return "Daily reminder sent manually", 200
+
+@app.route("/test-weekly-reminder", methods=["GET"])
+def test_weekly_reminder():
+    weekly_request_reminder()
+    return "Weekly reminder sent manually", 200
 
 # スケジューラ起動
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
@@ -137,8 +148,3 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-# Wakeup endpoint for external cron ping
-@app.route("/", methods=["GET"])
-def wakeup():
-    return "I'm awake!", 200
