@@ -164,7 +164,7 @@ def test_weekly_reminder():
     return "Weekly reminder sent manually", 200
 
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
-scheduler.add_job(daily_reminder, 'cron', hour=11, minute=50)
+scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.add_job(weekly_request_reminder, 'cron', day_of_week='sun', hour=19, minute=0)
 scheduler.start()
 
