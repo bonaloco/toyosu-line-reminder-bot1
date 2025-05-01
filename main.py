@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import datetime
+import pytz
 from flask import Flask, request, abort
 from apscheduler.schedulers.background import BackgroundScheduler
 from linebot import LineBotApi, WebhookHandler
@@ -18,8 +19,25 @@ GROUP_ID = os.getenv("GROUP_ID")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# スケジュール保存用
-weekly_schedule = {}
+# ファイル保存用パス
+SCHEDULE_FILE = "schedule.json"
+
+def save_schedule_to_file(schedule):
+    try:
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            json.dump(schedule, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        sys.stderr.write(f"保存エラー: {e}\n")
+
+def load_schedule_from_file():
+    try:
+        with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+# 起動時に読み込み
+weekly_schedule = load_schedule_from_file()
 
 def parse_schedule(text):
     sections = {'救急': [], 'AM院内': [], 'PM院内': [], '残り番': []}
@@ -36,7 +54,8 @@ def parse_schedule(text):
     return sections
 
 def get_today_assignment(sections):
-    today = datetime.datetime.now()
+    jst = pytz.timezone('Asia/Tokyo')
+    today = datetime.datetime.now(jst)
     weekday = today.weekday()
     assignment = {}
     for key in ['救急', 'AM院内', 'PM院内']:
@@ -87,8 +106,16 @@ def daily_reminder():
     line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
 
 def weekly_request_reminder():
-    message = "【お知らせ】\n来週分の週間予定表を入力してください！"
+    global weekly_schedule
+    message = "【お知らせ】\n来週分の週間予定表を入力してください！\n（※現在の予定はリセットされました）"
     line_bot_api.push_message(GROUP_ID, TextSendMessage(text=message))
+    weekly_schedule = {}
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            os.remove(SCHEDULE_FILE)
+            sys.stderr.write("✅ 旧スケジュールを削除しました。\n")
+    except Exception as e:
+        sys.stderr.write(f"スケジュール削除エラー: {e}\n")
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -109,12 +136,11 @@ def handle_message(event):
     sys.stderr.write(f"source.type = {event.source.type}\n")
     if event.source.type == "group":
         sys.stderr.write(f"✅ Group ID = {event.source.group_id}\n")
-    else:
-        sys.stderr.write("これはグループではありません\n")
     sys.stderr.write("===================\n")
 
     if '救急' in text and 'AM院内' in text and 'PM院内' in text and '残り番' in text:
         weekly_schedule = parse_schedule(text)
+        save_schedule_to_file(weekly_schedule)
         reply = "週間予定表を登録しました！"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
     elif '今週の予定を確認' in text:
@@ -123,12 +149,10 @@ def handle_message(event):
     else:
         pass
 
-# Wakeup ping
 @app.route("/", methods=["GET"])
 def wakeup():
     return "I'm awake!", 200
 
-# テスト用手動リマインドエンドポイント
 @app.route("/test-reminder", methods=["GET"])
 def test_reminder():
     daily_reminder()
@@ -139,7 +163,6 @@ def test_weekly_reminder():
     weekly_request_reminder()
     return "Weekly reminder sent manually", 200
 
-# スケジューラ起動
 scheduler = BackgroundScheduler(timezone="Asia/Tokyo")
 scheduler.add_job(daily_reminder, 'cron', hour=7, minute=30)
 scheduler.add_job(weekly_request_reminder, 'cron', day_of_week='sun', hour=19, minute=0)
