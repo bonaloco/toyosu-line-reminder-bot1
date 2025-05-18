@@ -14,7 +14,8 @@ app = Flask(__name__)
 # 環境変数
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-GROUP_ID = os.getenv("GROUP_ID")
+GROUP_ID_A = os.getenv("GROUP_ID_A")
+GROUP_ID_B = os.getenv("GROUP_ID_B")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -103,12 +104,12 @@ def daily_reminder():
         sys.stderr.write("予定表未登録\n")
         return
     msg = create_reminder(get_today_assignment(weekly_schedule))
-    line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
+    line_bot_api.push_message(GROUP_ID_A, TextSendMessage(text=msg))
 
 def weekly_request_reminder():
     global weekly_schedule
     message = "【お知らせ】\n来週分の週間予定表を入力してください！\n（※現在の予定はリセットされました）"
-    line_bot_api.push_message(GROUP_ID, TextSendMessage(text=message))
+    line_bot_api.push_message(GROUP_ID_B, TextSendMessage(text=message))
     weekly_schedule = {}
     try:
         if os.path.exists(SCHEDULE_FILE):
@@ -170,4 +171,7 @@ scheduler.start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)    if event.source.group_id != GROUP_ID_B:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="このグループからは予定を登録できません。"))
+        return
+
