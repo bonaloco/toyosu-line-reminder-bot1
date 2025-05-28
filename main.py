@@ -25,6 +25,9 @@ SCHEDULE_FILE = "schedule.json"
 
 def save_schedule_to_file(schedule):
     try:
+        # バックアップを残す
+        if os.path.exists(SCHEDULE_FILE):
+            os.replace(SCHEDULE_FILE, SCHEDULE_FILE + ".bak")
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
             json.dump(schedule, f, ensure_ascii=False, indent=2)
     except Exception as e:
