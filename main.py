@@ -95,8 +95,8 @@ def create_weekly_summary(sections):
         message += f" 救急(リハ診)：{sections['救急'][i] if i < len(sections['救急']) else '未設定'}\n"
         message += f" AM院内：{sections['AM院内'][i] if i < len(sections['AM院内']) else '未設定'}\n"
         message += f" PM院内：{sections['PM院内'][i] if i < len(sections['PM院内']) else '未設定'}\n"
-        message += f" AM医連：{sections['AM院内'][i] if i < len(sections['AM医連']) else '未設定'}\n"
-        message += f" PM医連：{sections['PM院内'][i] if i < len(sections['PM医連']) else '未設定'}\n"
+        message += f" AM医連：{sections['AM医連'][i] if i < len(sections['AM医連']) else '未設定'}\n"
+        message += f" PM医連：{sections['PM医連'][i] if i < len(sections['PM医連']) else '未設定'}\n"
         if i*2+1 < len(sections['残り番']):
             first = sections['残り番'][i*2] if i*2 < len(sections['残り番']) else "未設定"
             second = sections['残り番'][i*2+1] if i*2+1 < len(sections['残り番']) else "未設定"
