@@ -74,12 +74,11 @@ def get_today_assignment(sections):
 def create_reminder(assignments):
     if not assignments:
         return "本日はリマインド対象日ではありません。"
+
     message = "【本日の担当者】\n\n"
     message += f"救急(リハ診)：{assignments['救急']}\n"
-    message += f"AM院内：{assignments['AM院内']}\n"
-    message += f"PM院内：{assignments['PM院内']}\n"
-    message += f"AM医連：{assignments['AM医連']}\n"
-    message += f"PM医連：{assignments['PM医連']}\n"
+    message += f"院内：AM {assignments['AM院内']} → PM {assignments['PM院内']}\n"
+    message += f"医連：AM {assignments['AM医連']} → PM {assignments['PM医連']}\n"
     first, second = assignments['残り番']
     message += f"残り番：1st {first} ／ 2nd {second}\n\n"
     message += "よろしくお願いします！"
