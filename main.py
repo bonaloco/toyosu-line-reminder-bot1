@@ -44,7 +44,7 @@ def load_schedule_from_file():
 weekly_schedule = load_schedule_from_file()
 
 def parse_schedule(text):
-    sections = {'救急': [], 'AM院内': [], 'PM院内': [], '残り番': []}
+    sections = {'救急': [], 'AM院内': [], 'PM院内': [], 'AM医連': [], 'PM医連': [], '残り番': []}
     current_section = None
     for line in text.split("\n"):
         line = line.strip()
@@ -62,7 +62,7 @@ def get_today_assignment(sections):
     today = datetime.datetime.now(jst)
     weekday = today.weekday()
     assignment = {}
-    for key in ['救急', 'AM院内', 'PM院内']:
+    for key in ['救急', 'AM院内', 'PM院内', 'AM医連', 'PM医連']:
         assignment[key] = sections.get(key, ["未設定"])[weekday] if weekday < len(sections.get(key, [])) else "未設定"
     idx = weekday * 2
     if idx + 1 < len(sections.get('残り番', [])):
@@ -78,6 +78,8 @@ def create_reminder(assignments):
     message += f"救急(リハ診)：{assignments['救急']}\n"
     message += f"AM院内：{assignments['AM院内']}\n"
     message += f"PM院内：{assignments['PM院内']}\n"
+    message += f"AM医連：{assignments['AM医連']}\n"
+    message += f"PM医連：{assignments['PM医連']}\n"
     first, second = assignments['残り番']
     message += f"残り番：1st {first} ／ 2nd {second}\n\n"
     message += "よろしくお願いします！"
@@ -93,6 +95,8 @@ def create_weekly_summary(sections):
         message += f" 救急(リハ診)：{sections['救急'][i] if i < len(sections['救急']) else '未設定'}\n"
         message += f" AM院内：{sections['AM院内'][i] if i < len(sections['AM院内']) else '未設定'}\n"
         message += f" PM院内：{sections['PM院内'][i] if i < len(sections['PM院内']) else '未設定'}\n"
+        message += f" AM医連：{sections['AM院内'][i] if i < len(sections['AM医連']) else '未設定'}\n"
+        message += f" PM医連：{sections['PM院内'][i] if i < len(sections['PM医連']) else '未設定'}\n"
         if i*2+1 < len(sections['残り番']):
             first = sections['残り番'][i*2] if i*2 < len(sections['残り番']) else "未設定"
             second = sections['残り番'][i*2+1] if i*2+1 < len(sections['残り番']) else "未設定"
