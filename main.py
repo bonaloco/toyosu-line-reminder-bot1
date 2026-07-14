@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import datetime
+import threading
 
 import pytz
 from flask import Flask, request, abort, jsonify, render_template
@@ -319,8 +320,20 @@ def ingest(days, source):
 
 
 # ── 定期実行(cron-job.orgから) ──────────────────────────
+def delivered_today(logs=None):
+    """今日すでに配信済みか(logシートの記録で判定)"""
+    today = now_jst().date().isoformat()
+    if logs is None:
+        logs = load_logs()
+    return any(l["level"] == "配信" and l["time"].startswith(today) for l in logs)
+
+
 def daily_reminder():
     today = now_jst().date().isoformat()
+    if delivered_today():
+        # ダッシュボードから手動配信済みの日は二重配信しない
+        log_event("確認", "本日(%s)は配信済みのため自動配信をスキップ" % today)
+        return
     assignment = load_schedule().get(today)
     if assignment:
         push(GROUP_ID_A, create_reminder(assignment))
@@ -384,8 +397,39 @@ def callback():
 
 
 # ── LINE イベントハンドラ ─────────────────────────────────
+# LINEのWebhookは数秒以内の応答が必要。AI解析(30〜60秒)を玄関先で行うと
+# タイムアウト→再送→再解析の無限ループになるため、
+# (1) 応答は即返し、解析は別スレッドで行う
+# (2) 処理済みメッセージIDを記憶し、再送されても二度目は解析しない
+_processed_ids = set()
+
+
+def _mark_processed(message_id):
+    """このメッセージが初見なら記憶してTrue、処理済みならFalse"""
+    if message_id in _processed_ids:
+        return False
+    if len(_processed_ids) > 500:
+        _processed_ids.clear()
+    _processed_ids.add(message_id)
+    return True
+
+
 def _source_group(event):
     return event.source.group_id if event.source.type == "group" else None
+
+
+def _ingest_pdf_async(message_id, file_name):
+    try:
+        content = line_bot_api.get_message_content(message_id)
+        days = parse_pdf(content.content)
+        ingest(days, "PDF(%s)" % file_name)
+    except Exception as e:
+        sys.stderr.write("PDF取り込みエラー: %s\n" % e)
+        log_event("エラー", "PDF取り込み失敗: %s" % e)
+        try:
+            push(GROUP_ID_B, "⚠ PDF(%s)の読み取りに失敗しました。\nテキストでの手動登録をお願いします。\n(理由: %s)" % (file_name, e))
+        except Exception:
+            pass
 
 
 @handler.add(MessageEvent, message=FileMessage)
@@ -398,17 +442,13 @@ def handle_file(event):
     name = (event.message.file_name or "").lower()
     if not name.endswith(".pdf"):
         return
-    try:
-        content = line_bot_api.get_message_content(event.message.id)
-        days = parse_pdf(content.content)
-        ingest(days, "PDF(%s)" % event.message.file_name)
-    except Exception as e:
-        sys.stderr.write("PDF取り込みエラー: %s\n" % e)
-        log_event("エラー", "PDF取り込み失敗: %s" % e)
-        try:
-            push(GROUP_ID_B, "⚠ PDF(%s)の読み取りに失敗しました。\nテキストでの手動登録をお願いします。\n(理由: %s)" % (event.message.file_name, e))
-        except Exception:
-            pass
+    if not _mark_processed(event.message.id):
+        return  # 再送された同じPDFは無視
+    threading.Thread(
+        target=_ingest_pdf_async,
+        args=(event.message.id, event.message.file_name),
+        daemon=True,
+    ).start()
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -426,22 +466,26 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
         return
 
-    # 手動登録: group Bで「救急」「残り番」を含む長めのテキストを予定表とみなす
+    # 手動登録: group Bで「救急」「残り番」を含むテキストを予定表とみなす
+    # (AI解析に時間がかかるため、応答は即返して解析は別スレッドで行う)
     if group == GROUP_ID_B and "救急" in text and "残り番" in text:
+        if not _mark_processed(event.message.id):
+            return
+        threading.Thread(target=_ingest_text_async, args=(text,), daemon=True).start()
+
+
+def _ingest_text_async(text):
+    try:
+        days = parse_text(text)
+        save_schedule(days)
+        log_event("成功", "テキストから%d日分を登録" % len(days))
+        push(GROUP_ID_B, "✅ %d日分の予定を登録しました。\n「今週の予定を確認」で内容を確認できます。" % len(days))
+    except Exception as e:
+        log_event("エラー", "テキスト登録失敗: %s" % e)
         try:
-            days = parse_text(text)
-            save_schedule(days)
-            log_event("成功", "テキストから%d日分を登録" % len(days))
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="✅ %d日分の予定を登録しました。\n「今週の予定を確認」で内容を確認できます。" % len(days)),
-            )
-        except Exception as e:
-            log_event("エラー", "テキスト登録失敗: %s" % e)
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="⚠ テキストの読み取りに失敗しました。(理由: %s)" % e),
-            )
+            push(GROUP_ID_B, "⚠ テキストの読み取りに失敗しました。(理由: %s)" % e)
+        except Exception:
+            pass
 
 
 # ── 管理ダッシュボード ───────────────────────────────────
@@ -455,16 +499,25 @@ def admin():
 def api_status():
     _check_token(ADMIN_TOKEN)
     logs = load_logs()
-    today = now_jst().date().isoformat()
-    delivered = any(
-        l["level"] == "配信" and l["time"].startswith(today) for l in logs
-    )
     return jsonify({
         "now": now_jst().strftime("%Y-%m-%d %H:%M"),
-        "today": today,
-        "delivered_today": delivered,
+        "today": now_jst().date().isoformat(),
+        "delivered_today": delivered_today(logs),
         "logs": logs,
     })
+
+
+@app.route("/api/deliver", methods=["POST"])
+def api_deliver():
+    """ダッシュボードの「未配信」タップから、本日の担当を今すぐ配信する"""
+    _check_token(ADMIN_TOKEN)
+    today = now_jst().date().isoformat()
+    assignment = load_schedule().get(today)
+    if not assignment:
+        return jsonify({"error": "本日の予定が未登録のため配信できません"}), 400
+    push(GROUP_ID_A, create_reminder(assignment))
+    log_event("配信", "本日(%s)の担当を配信(ダッシュボードから手動)" % today)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/schedule", methods=["GET"])
