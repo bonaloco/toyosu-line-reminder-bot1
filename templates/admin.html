@@ -99,8 +99,26 @@
   }
 
   /* ── ① 今日カード ── */
-  /* バッジは常に日付の下の専用行(日によってヘッダー高さが変わらないように) */
-  .today-head { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+  /* タイトル行: 左に見出し、右に配信バッジ(今日)or「今日に戻る」(他の日)。高さ固定 */
+  .card-title-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; min-height: 44px; margin-bottom: 4px;
+  }
+  .card-title-row h2 { margin-bottom: 0; }
+  /* 日付行: ‹ 日付 › の右に登録状況チップ。高さ固定 */
+  .today-head { display: flex; align-items: center; gap: 10px; min-height: 44px; margin-bottom: 12px; }
+  .reg-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; flex-shrink: 0;
+  }
+  .reg-badge.ok {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--ok-bg); color: var(--ok); font-size: 1rem;
+  }
+  .reg-badge.warn {
+    min-height: 28px; padding: 3px 12px; border-radius: 999px;
+    background: var(--warn-bg); color: var(--warn); font-size: .78rem;
+  }
   .day-nav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
   .nav-arrow {
     width: 40px; height: 44px; background: none; border: none;
@@ -110,12 +128,12 @@
   .nav-arrow:active { color: var(--accent); }
   .today-date { font-size: 1.3rem; font-weight: 700; }
   .back-today {
-    margin-top: 12px; min-height: 40px; padding: 6px 16px;
+    min-height: 32px; padding: 3px 12px;
     border-radius: 999px; border: none;
     background: var(--accent-weak); color: var(--accent);
-    font-size: .85rem; font-weight: 700; cursor: pointer;
+    font-size: .8rem; font-weight: 700; cursor: pointer; flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
   }
-  .swipe-hint { margin-top: 10px; font-size: .75rem; color: var(--text-sub); text-align: center; }
   .badge {
     display: inline-flex; align-items: center; gap: 5px;
     font-size: .82rem; font-weight: 700;
@@ -137,10 +155,10 @@
   dl.duty dt.gaikin-t { margin-top: 12px; }
   dl.duty dd.gaikin {
     margin-top: 12px; font-weight: 500; font-size: .9rem; line-height: 1.7;
-    height: 88px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    height: 168px; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
   #day-pane { will-change: transform; }
-  #today-body { min-height: 228px; }
+  #today-body { min-height: 308px; }
   .empty-note { color: var(--text-sub); text-align: center; padding: 16px 0; }
 
   /* ── ② 週グリッド ── */
@@ -254,7 +272,11 @@
 <main>
   <!-- ① 今日カード(スワイプ/矢印で前後の日へ) -->
   <section class="card" aria-labelledby="today-h" id="today-card">
-    <h2 id="today-h">今日の担当</h2>
+    <div class="card-title-row">
+      <h2 id="today-h">今日の担当</h2>
+      <button type="button" class="badge warn" id="deliver-badge" disabled style="display:none">確認中…</button>
+      <button type="button" class="back-today" id="btn-today" style="display:none">今日に戻る</button>
+    </div>
     <div id="day-pane">
       <div class="today-head">
         <div class="day-nav">
@@ -262,12 +284,10 @@
           <span class="today-date" id="today-date">–/–</span>
           <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
         </div>
-        <button type="button" class="badge warn" id="deliver-badge" disabled>確認中…</button>
+        <span class="reg-badge" id="reg-badge" style="display:none"></span>
       </div>
       <div id="today-body"><p class="empty-note">読み込み中…</p></div>
     </div>
-    <button type="button" class="back-today" id="btn-today" style="visibility:hidden">今日に戻る</button>
-    <p class="swipe-hint">← 左右にスワイプで前後の日 →</p>
   </section>
 
   <!-- ② 週の取込状況 -->
@@ -372,28 +392,45 @@ function renderDay() {
   const key = shiftDate(statusData.today, dayOffset);
   $("today-h").textContent = offsetLabel(dayOffset);
   $("today-date").textContent = fmt(key);
-  // hiddenではなくvisibilityで切り替え、ボタン分の高さを常に確保(カード高さ固定のため)
-  $("btn-today").style.visibility = dayOffset === 0 ? "hidden" : "visible";
   const a = schedule[key];
   const badge = $("deliver-badge");
+  const reg = $("reg-badge");
+  const back = $("btn-today");
   badge.disabled = true;
   badge.onclick = null;
+
+  // 登録状況チップ(日付の右): 登録済みは✓のみ、未登録は「⚠ 未登録」
+  reg.style.display = "inline-flex";
+  if (a) {
+    reg.className = "reg-badge ok";
+    reg.textContent = "✓";
+    reg.setAttribute("aria-label", "登録済み");
+    reg.title = "登録済み";
+  } else {
+    reg.className = "reg-badge warn";
+    reg.textContent = "⚠ 未登録";
+    reg.removeAttribute("aria-label");
+    reg.title = "";
+  }
+
+  // タイトル行の右: 今日は配信バッジ、他の日は「今日に戻る」
   if (dayOffset === 0) {
-    // 今日だけ配信ステータス+手動配信ボタン
+    back.style.display = "none";
     if (statusData.delivered_today) {
+      badge.style.display = "inline-flex";
       badge.className = "badge ok"; badge.textContent = "✓ 配信済み";
     } else if (a) {
+      badge.style.display = "inline-flex";
       badge.className = "badge warn tappable";
       badge.textContent = "⚠ 未配信 — タップで配信";
       badge.disabled = false;
       badge.onclick = deliverNow;
     } else {
-      badge.className = "badge err"; badge.textContent = "✕ データなし";
+      badge.style.display = "none";  // 未登録は日付横のチップで伝わる
     }
-  } else if (a) {
-    badge.className = "badge ok"; badge.textContent = "✓ 登録済み";
   } else {
-    badge.className = "badge warn"; badge.textContent = "⚠ 未登録";
+    badge.style.display = "none";
+    back.style.display = "inline-flex";
   }
   const body = $("today-body");
   if (!a) {
