@@ -63,6 +63,16 @@
     max-width: 640px; margin: 0 auto;
   }
   header h1 { font-size: clamp(1.1rem, 4vw, 1.4rem); font-weight: 700; }
+  .header-right { display: flex; align-items: center; gap: 8px; }
+  .icon-btn {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text-sub); display: flex; align-items: center; justify-content: center;
+    cursor: pointer; -webkit-tap-highlight-color: transparent; padding: 0;
+  }
+  .icon-btn:active { opacity: .7; }
+  .icon-btn.spinning svg { animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .health {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: .85rem; font-weight: 600;
@@ -90,7 +100,21 @@
 
   /* ── ① 今日カード ── */
   .today-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .day-nav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
+  .nav-arrow {
+    width: 40px; height: 44px; background: none; border: none;
+    color: var(--text-sub); font-size: 1.7rem; line-height: 1; padding: 0 0 4px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .nav-arrow:active { color: var(--accent); }
   .today-date { font-size: 1.3rem; font-weight: 700; }
+  .back-today {
+    margin-top: 12px; min-height: 40px; padding: 6px 16px;
+    border-radius: 999px; border: none;
+    background: var(--accent-weak); color: var(--accent);
+    font-size: .85rem; font-weight: 700; cursor: pointer;
+  }
+  .swipe-hint { margin-top: 10px; font-size: .75rem; color: var(--text-sub); text-align: center; }
   .badge {
     display: inline-flex; align-items: center; gap: 5px;
     font-size: .82rem; font-weight: 700;
@@ -210,18 +234,31 @@
 
 <header>
   <h1>整形当番bot</h1>
-  <span class="health" id="health"><span class="dot"></span><span id="health-label">確認中…</span></span>
+  <div class="header-right">
+    <button type="button" class="icon-btn" id="btn-refresh" aria-label="最新の情報に更新">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>
+      </svg>
+    </button>
+    <span class="health" id="health"><span class="dot"></span><span id="health-label">確認中…</span></span>
+  </div>
 </header>
 
 <main>
-  <!-- ① 今日カード -->
-  <section class="card" aria-labelledby="today-h">
+  <!-- ① 今日カード(スワイプ/矢印で前後の日へ) -->
+  <section class="card" aria-labelledby="today-h" id="today-card">
     <h2 id="today-h">今日の担当</h2>
     <div class="today-head">
-      <span class="today-date" id="today-date">–/–</span>
+      <div class="day-nav">
+        <button type="button" class="nav-arrow" id="btn-prev" aria-label="前の日を表示">‹</button>
+        <span class="today-date" id="today-date">–/–</span>
+        <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
+      </div>
       <button type="button" class="badge warn" id="deliver-badge" disabled>確認中…</button>
     </div>
     <div id="today-body"><p class="empty-note">読み込み中…</p></div>
+    <button type="button" class="back-today" id="btn-today" hidden>今日に戻る</button>
+    <p class="swipe-hint">← 左右にスワイプで前後の日 →</p>
   </section>
 
   <!-- ② 週の取込状況 -->
@@ -279,6 +316,9 @@ const WD = ["月","火","水","木","金","土","日"];
 const FIELDS = ["救急","AM院内","PM院内","AM医連","PM医連"];
 let schedule = {};
 let editingDate = null;
+let statusData = null;   // /api/status の最新結果
+let dayOffset = 0;       // 今日カードに表示中の日(今日=0、翌日=+1…)
+const OFFSET_MIN = -7, OFFSET_MAX = 13;
 
 const $ = (id) => document.getElementById(id);
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -304,28 +344,50 @@ function setHealth(ok, label) {
   $("health-label").textContent = label;
 }
 
-/* ── ① 今日カード ── */
-function renderToday(status) {
-  const today = status.today;
-  $("today-date").textContent = fmt(today);
-  const a = schedule[today];
+/* ── ① 今日カード(スワイプで日移動) ── */
+function shiftDate(baseIso, off) {
+  const d = new Date(baseIso + "T00:00:00");
+  d.setDate(d.getDate() + off);
+  return iso(d);
+}
+
+function offsetLabel(off) {
+  if (off === 0)  return "今日の担当";
+  if (off === 1)  return "明日の担当";
+  if (off === -1) return "昨日の担当";
+  return off > 0 ? `${off}日後の担当` : `${-off}日前の担当`;
+}
+
+function renderDay() {
+  if (!statusData) return;
+  const key = shiftDate(statusData.today, dayOffset);
+  $("today-h").textContent = offsetLabel(dayOffset);
+  $("today-date").textContent = fmt(key);
+  $("btn-today").hidden = dayOffset === 0;
+  const a = schedule[key];
   const badge = $("deliver-badge");
   badge.disabled = true;
   badge.onclick = null;
-  if (status.delivered_today) {
-    badge.className = "badge ok"; badge.textContent = "✓ 配信済み";
+  if (dayOffset === 0) {
+    // 今日だけ配信ステータス+手動配信ボタン
+    if (statusData.delivered_today) {
+      badge.className = "badge ok"; badge.textContent = "✓ 配信済み";
+    } else if (a) {
+      badge.className = "badge warn tappable";
+      badge.textContent = "⚠ 未配信 — タップで配信";
+      badge.disabled = false;
+      badge.onclick = deliverNow;
+    } else {
+      badge.className = "badge err"; badge.textContent = "✕ データなし";
+    }
   } else if (a) {
-    // 未配信かつデータあり → タップで今すぐ配信できるボタンになる
-    badge.className = "badge warn tappable";
-    badge.textContent = "⚠ 未配信 — タップで配信";
-    badge.disabled = false;
-    badge.onclick = deliverNow;
+    badge.className = "badge ok"; badge.textContent = "✓ 登録済み";
   } else {
-    badge.className = "badge err"; badge.textContent = "✕ データなし";
+    badge.className = "badge warn"; badge.textContent = "⚠ 未登録";
   }
   const body = $("today-body");
   if (!a) {
-    body.innerHTML = '<p class="empty-note">本日の予定が登録されていません</p>';
+    body.innerHTML = '<p class="empty-note">この日の予定は登録されていません</p>';
     return;
   }
   const z = a["残り番"] || ["未設定","未設定"];
@@ -337,6 +399,11 @@ function renderToday(status) {
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
     ${g.length ? `<dt>外勤</dt><dd class="gaikin">${g.map(esc).join("<br>")}</dd>` : ""}
   </dl>`;
+}
+
+function moveDay(delta) {
+  dayOffset = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, dayOffset + delta));
+  renderDay();
 }
 
 const esc = (s) => String(s ?? "未設定").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -447,8 +514,9 @@ async function load() {
   try {
     const [status, sched] = await Promise.all([api("/api/status"), api("/api/schedule")]);
     schedule = sched;
+    statusData = status;
     setHealth(true, "稼働中");
-    renderToday(status);
+    renderDay();
     renderWeeks(status.today);
     renderLogs(status.logs);
   } catch (err) {
@@ -456,6 +524,38 @@ async function load() {
     toast("データ取得に失敗しました");
   }
 }
+
+/* ── 日移動: 矢印・今日に戻る・スワイプ ── */
+$("btn-prev").addEventListener("click", () => moveDay(-1));
+$("btn-next").addEventListener("click", () => moveDay(1));
+$("btn-today").addEventListener("click", () => { dayOffset = 0; renderDay(); });
+
+let touchX = null, touchY = null;
+const todayCard = $("today-card");
+todayCard.addEventListener("touchstart", (e) => {
+  touchX = e.touches[0].clientX;
+  touchY = e.touches[0].clientY;
+}, { passive: true });
+todayCard.addEventListener("touchend", (e) => {
+  if (touchX === null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  const dy = e.changedTouches[0].clientY - touchY;
+  touchX = touchY = null;
+  // 横方向のはっきりしたスワイプだけ反応(縦スクロールと区別)
+  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    moveDay(dx < 0 ? 1 : -1);
+  }
+}, { passive: true });
+
+/* ── 更新ボタン ── */
+$("btn-refresh").addEventListener("click", async () => {
+  const b = $("btn-refresh");
+  if (b.classList.contains("spinning")) return;
+  b.classList.add("spinning");
+  await load();
+  b.classList.remove("spinning");
+  toast("最新の情報に更新しました");
+});
 
 load();
 setInterval(load, 60000);
