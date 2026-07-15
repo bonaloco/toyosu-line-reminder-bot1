@@ -94,9 +94,27 @@ def log_event(level, message):
     """log シートに1行追記(失敗してもbot本体は止めない)"""
     try:
         ws = _worksheet("log")
-        ws.append_row([now_jst().strftime("%Y-%m-%d %H:%M"), level, message])
+        # RAW指定: Sheetsが日時文字列を勝手に日付型に変換して表示形式を変えるのを防ぐ
+        ws.append_row([now_jst().strftime("%Y-%m-%d %H:%M"), level, message],
+                      value_input_option="RAW")
     except Exception as e:
         sys.stderr.write("ログ記録エラー: %s\n" % e)
+
+
+def mark_delivered(date_str):
+    """配信済み日付をscheduleシートのB1セルに記録(配信判定の正式な記録)"""
+    try:
+        _worksheet("schedule").update("B1", [[date_str]])
+    except Exception as e:
+        sys.stderr.write("配信記録エラー: %s\n" % e)
+
+
+def load_delivered_date():
+    try:
+        return _worksheet("schedule").acell("B1").value or ""
+    except Exception as e:
+        sys.stderr.write("配信記録読み込みエラー: %s\n" % e)
+        return ""
 
 
 def load_logs(limit=30):
@@ -334,11 +352,19 @@ def ingest(days, source):
 
 # ── 定期実行(cron-job.orgから) ──────────────────────────
 def delivered_today(logs=None):
-    """今日すでに配信済みか(logシートの記録で判定)"""
+    """今日すでに配信済みか。
+    正式にはscheduleシートB1の配信済み日付で判定する。
+    保険として、ログの時刻(Sheetsに書式を変えられている場合もあるので
+    スラッシュをハイフンに正規化)でも照合する。"""
     today = now_jst().date().isoformat()
+    if load_delivered_date() == today:
+        return True
     if logs is None:
         logs = load_logs()
-    return any(l["level"] == "配信" and l["time"].startswith(today) for l in logs)
+    return any(
+        l["level"] == "配信" and l["time"].replace("/", "-").startswith(today)
+        for l in logs
+    )
 
 
 def daily_reminder():
@@ -350,6 +376,7 @@ def daily_reminder():
     assignment = load_schedule().get(today)
     if assignment:
         push(GROUP_ID_A, create_reminder(assignment))
+        mark_delivered(today)
         log_event("配信", "本日(%s)の担当を配信" % today)
     else:
         push(GROUP_ID_B, "⚠ 本日(%s)の予定が未登録のため、リマインドを配信できませんでした。\nPDFを投稿するか、テキストで登録してください。" % format_date_ja(today))
@@ -529,6 +556,7 @@ def api_deliver():
     if not assignment:
         return jsonify({"error": "本日の予定が未登録のため配信できません"}), 400
     push(GROUP_ID_A, create_reminder(assignment))
+    mark_delivered(today)
     log_event("配信", "本日(%s)の担当を配信(ダッシュボードから手動)" % today)
     return jsonify({"ok": True})
 
