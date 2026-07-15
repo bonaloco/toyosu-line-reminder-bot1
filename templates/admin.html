@@ -99,7 +99,8 @@
   }
 
   /* ── ① 今日カード ── */
-  .today-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  /* バッジは常に日付の下の専用行(日によってヘッダー高さが変わらないように) */
+  .today-head { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
   .day-nav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
   .nav-arrow {
     width: 40px; height: 44px; background: none; border: none;
@@ -118,14 +119,13 @@
   .badge {
     display: inline-flex; align-items: center; gap: 5px;
     font-size: .82rem; font-weight: 700;
-    padding: 5px 12px; border-radius: 999px;
+    min-height: 44px; padding: 5px 14px; border-radius: 999px;
   }
   .badge.ok   { background: var(--ok-bg);   color: var(--ok); }
   .badge.warn { background: var(--warn-bg); color: var(--warn); }
   .badge.err  { background: var(--error-bg);color: var(--error); }
   .badge.tappable {
     cursor: pointer; border: none; font-family: inherit;
-    min-height: 44px; padding: 8px 14px;
     box-shadow: inset 0 0 0 1.5px var(--warn);
     -webkit-tap-highlight-color: transparent;
   }
@@ -133,7 +133,14 @@
   dl.duty { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
   dl.duty dt { color: var(--text-sub); font-size: .9rem; padding-top: 2px; white-space: nowrap; }
   dl.duty dd { font-weight: 600; }
-  dl.duty dd.gaikin { font-weight: 500; font-size: .9rem; line-height: 1.7; }
+  /* 外勤: 残り番との間に余白+固定高さの枠内でスクロール(カード高さを一定に保つ) */
+  dl.duty dt.gaikin-t { margin-top: 12px; }
+  dl.duty dd.gaikin {
+    margin-top: 12px; font-weight: 500; font-size: .9rem; line-height: 1.7;
+    height: 88px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  #day-pane { will-change: transform; }
+  #today-body { min-height: 228px; }
   .empty-note { color: var(--text-sub); text-align: center; padding: 16px 0; }
 
   /* ── ② 週グリッド ── */
@@ -248,16 +255,18 @@
   <!-- ① 今日カード(スワイプ/矢印で前後の日へ) -->
   <section class="card" aria-labelledby="today-h" id="today-card">
     <h2 id="today-h">今日の担当</h2>
-    <div class="today-head">
-      <div class="day-nav">
-        <button type="button" class="nav-arrow" id="btn-prev" aria-label="前の日を表示">‹</button>
-        <span class="today-date" id="today-date">–/–</span>
-        <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
+    <div id="day-pane">
+      <div class="today-head">
+        <div class="day-nav">
+          <button type="button" class="nav-arrow" id="btn-prev" aria-label="前の日を表示">‹</button>
+          <span class="today-date" id="today-date">–/–</span>
+          <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
+        </div>
+        <button type="button" class="badge warn" id="deliver-badge" disabled>確認中…</button>
       </div>
-      <button type="button" class="badge warn" id="deliver-badge" disabled>確認中…</button>
+      <div id="today-body"><p class="empty-note">読み込み中…</p></div>
     </div>
-    <div id="today-body"><p class="empty-note">読み込み中…</p></div>
-    <button type="button" class="back-today" id="btn-today" hidden>今日に戻る</button>
+    <button type="button" class="back-today" id="btn-today" style="visibility:hidden">今日に戻る</button>
     <p class="swipe-hint">← 左右にスワイプで前後の日 →</p>
   </section>
 
@@ -363,7 +372,8 @@ function renderDay() {
   const key = shiftDate(statusData.today, dayOffset);
   $("today-h").textContent = offsetLabel(dayOffset);
   $("today-date").textContent = fmt(key);
-  $("btn-today").hidden = dayOffset === 0;
+  // hiddenではなくvisibilityで切り替え、ボタン分の高さを常に確保(カード高さ固定のため)
+  $("btn-today").style.visibility = dayOffset === 0 ? "hidden" : "visible";
   const a = schedule[key];
   const badge = $("deliver-badge");
   badge.disabled = true;
@@ -397,13 +407,40 @@ function renderDay() {
     <dt>院内</dt><dd>AM ${esc(a["AM院内"])} → PM ${esc(a["PM院内"])}</dd>
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
-    ${g.length ? `<dt>外勤</dt><dd class="gaikin">${g.map(esc).join("<br>")}</dd>` : ""}
+    <dt class="gaikin-t">外勤</dt><dd class="gaikin">${g.length ? g.map(esc).join("<br>") : "なし"}</dd>
   </dl>`;
 }
 
-function moveDay(delta) {
-  dayOffset = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, dayOffset + delta));
-  renderDay();
+/* ── 日の切り替え(スライドアニメーション付き) ── */
+let animating = false;
+
+function springBack() {
+  const pane = $("day-pane");
+  pane.style.transition = "transform .2s ease";
+  pane.style.transform = "translateX(0)";
+}
+
+function swapDay(delta) {
+  if (animating) return;
+  const target = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, dayOffset + delta));
+  if (target === dayOffset) { springBack(); return; }  // 端に到達 → 元の位置へ戻す
+  animating = true;
+  const pane = $("day-pane");
+  const dir = delta > 0 ? -1 : 1;  // 翌日へ → 現在の内容は左へ抜ける
+  pane.style.transition = "transform .15s ease-in, opacity .15s ease-in";
+  pane.style.transform = `translateX(${dir * 72}px)`;
+  pane.style.opacity = "0";
+  setTimeout(() => {
+    dayOffset = target;
+    renderDay();
+    pane.style.transition = "none";
+    pane.style.transform = `translateX(${-dir * 72}px)`;
+    void pane.offsetWidth;  // 反映を強制してから戻りのアニメーションへ
+    pane.style.transition = "transform .18s ease-out, opacity .18s ease-out";
+    pane.style.transform = "translateX(0)";
+    pane.style.opacity = "1";
+    setTimeout(() => { animating = false; pane.style.transition = "none"; }, 200);
+  }, 150);
 }
 
 const esc = (s) => String(s ?? "未設定").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -526,9 +563,9 @@ async function load() {
 }
 
 /* ── 日移動: 矢印・今日に戻る・スワイプ ── */
-$("btn-prev").addEventListener("click", () => moveDay(-1));
-$("btn-next").addEventListener("click", () => moveDay(1));
-$("btn-today").addEventListener("click", () => { dayOffset = 0; renderDay(); });
+$("btn-prev").addEventListener("click", () => swapDay(-1));
+$("btn-next").addEventListener("click", () => swapDay(1));
+$("btn-today").addEventListener("click", () => swapDay(-dayOffset));
 
 let touchX = null, touchY = null;
 const todayCard = $("today-card");
@@ -536,14 +573,26 @@ todayCard.addEventListener("touchstart", (e) => {
   touchX = e.touches[0].clientX;
   touchY = e.touches[0].clientY;
 }, { passive: true });
+todayCard.addEventListener("touchmove", (e) => {
+  if (touchX === null || animating) return;
+  const dx = e.touches[0].clientX - touchX;
+  const dy = e.touches[0].clientY - touchY;
+  // 横方向の動きなら、指に少し追従してカード内容を動かす
+  if (Math.abs(dx) > Math.abs(dy)) {
+    $("day-pane").style.transition = "none";
+    $("day-pane").style.transform = `translateX(${dx * 0.35}px)`;
+  }
+}, { passive: true });
 todayCard.addEventListener("touchend", (e) => {
   if (touchX === null) return;
   const dx = e.changedTouches[0].clientX - touchX;
   const dy = e.changedTouches[0].clientY - touchY;
   touchX = touchY = null;
-  // 横方向のはっきりしたスワイプだけ反応(縦スクロールと区別)
+  // 横方向のはっきりしたスワイプだけ日を切り替え(縦スクロールと区別)
   if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-    moveDay(dx < 0 ? 1 : -1);
+    swapDay(dx < 0 ? 1 : -1);
+  } else {
+    springBack();
   }
 }, { passive: true });
 
