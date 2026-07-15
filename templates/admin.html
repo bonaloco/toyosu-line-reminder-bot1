@@ -109,6 +109,7 @@
   dl.duty { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
   dl.duty dt { color: var(--text-sub); font-size: .9rem; padding-top: 2px; white-space: nowrap; }
   dl.duty dd { font-weight: 600; }
+  dl.duty dd.gaikin { font-weight: 500; font-size: .9rem; line-height: 1.7; }
   .empty-note { color: var(--text-sub); text-align: center; padding: 16px 0; }
 
   /* ── ② 週グリッド ── */
@@ -176,6 +177,13 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
   }
   .field input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .field textarea {
+    width: 100%; min-height: 96px; resize: vertical;
+    font-size: 16px; font-family: inherit; line-height: 1.6;
+    color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
+  }
+  .field textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
   .zanban-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .sheet-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; margin-top: 18px; }
   button {
@@ -252,6 +260,10 @@
       <div class="field"><label for="f-残1">残り番 1st</label><input id="f-残1" autocomplete="off"></div>
       <div class="field"><label for="f-残2">残り番 2nd</label><input id="f-残2" autocomplete="off"></div>
     </div>
+    <div class="field">
+      <label for="f-外勤">外勤(1行に1件・例: 石川島ー磯崎。なければ空欄)</label>
+      <textarea id="f-外勤" autocomplete="off"></textarea>
+    </div>
     <div class="sheet-actions">
       <button type="button" class="btn-ghost" id="btn-cancel">閉じる</button>
       <button type="submit" class="btn-primary">この内容で保存</button>
@@ -317,11 +329,13 @@ function renderToday(status) {
     return;
   }
   const z = a["残り番"] || ["未設定","未設定"];
+  const g = a["外勤"] || [];
   body.innerHTML = `<dl class="duty">
     <dt>救急(リハ診)</dt><dd>${esc(a["救急"])}</dd>
     <dt>院内</dt><dd>AM ${esc(a["AM院内"])} → PM ${esc(a["PM院内"])}</dd>
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
+    ${g.length ? `<dt>外勤</dt><dd class="gaikin">${g.map(esc).join("<br>")}</dd>` : ""}
   </dl>`;
 }
 
@@ -376,6 +390,7 @@ function openSheet(date) {
   for (const f of FIELDS) $("f-" + f).value = a[f] || "";
   $("f-残1").value = z[0] || "";
   $("f-残2").value = z[1] || "";
+  $("f-外勤").value = (a["外勤"] || []).join("\n");
   document.body.classList.add("sheet-open");
 }
 
@@ -394,6 +409,7 @@ $("edit-form").addEventListener("submit", async (e) => {
   const assignment = {};
   for (const f of FIELDS) assignment[f] = $("f-" + f).value.trim() || "未設定";
   assignment["残り番"] = [$("f-残1").value.trim() || "未設定", $("f-残2").value.trim() || "未設定"];
+  assignment["外勤"] = $("f-外勤").value.split("\n").map(s => s.trim()).filter(Boolean);
   try {
     await api("/api/schedule", {
       method: "POST",
