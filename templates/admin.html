@@ -113,14 +113,44 @@
     min-height: 28px; padding: 3px 12px; border-radius: 999px;
     background: var(--warn-bg); color: var(--warn); font-size: .78rem;
   }
-  /* 日付はタップでカレンダー(透明なdate入力を重ねる) */
+  /* 日付はタップでカレンダーを開く(button要素のリセット込み) */
   .date-wrap { position: relative; display: inline-flex; align-items: center; }
-  .today-date { border-bottom: 2px dotted var(--text-sub); padding-bottom: 1px; cursor: pointer; }
-  #date-picker {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    opacity: 0; border: 0; padding: 0; cursor: pointer;
-    -webkit-appearance: none; appearance: none;
+  .today-date {
+    background: none; border: none; border-radius: 0;
+    border-bottom: 2px dotted var(--text-sub);
+    padding: 0 0 1px; min-height: 0;
+    font-family: inherit; font-size: 1.3rem; font-weight: 700; color: var(--text);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
   }
+
+  /* ── カレンダーポップアップ(タップ即ジャンプ・即クローズ) ── */
+  .cal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / .35); z-index: 24; }
+  .cal-pop {
+    position: fixed; left: 50%; top: 104px; transform: translateX(-50%);
+    width: min(330px, calc(100vw - 32px));
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: 0 12px 40px rgb(0 0 0 / .35); padding: 14px; z-index: 25;
+  }
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .cal-head button {
+    width: 44px; height: 44px; min-height: 0; background: none; border: none;
+    font-size: 1.5rem; color: var(--text-sub); cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .cal-head button:disabled { opacity: .25; }
+  #cal-title { font-weight: 700; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .cal-wd { text-align: center; font-size: .7rem; color: var(--text-sub); padding: 4px 0; }
+  .cal-day {
+    min-height: 40px; border: none; background: none; border-radius: 10px;
+    color: var(--text); font-size: .95rem; font-family: inherit; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .cal-day:active { background: var(--surface-2); }
+  .cal-day.dis { color: var(--border); cursor: default; }
+  .cal-day.today { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .cal-day.sel { background: var(--accent); color: #fff; font-weight: 700; }
+  @media (prefers-color-scheme: dark) { .cal-day.sel { color: #042f2e; } }
   .day-nav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
   .nav-arrow {
     width: 40px; height: 44px; background: none; border: none;
@@ -156,18 +186,10 @@
   dl.duty dd { font-weight: 600; }
   /* 外勤: 残り番との間に余白+固定高さの枠内でスクロール(カード高さを一定に保つ) */
   dl.duty dt.gaikin-t { margin-top: 12px; }
-  dl.duty dd.gaikin { margin-top: 12px; position: relative; height: 168px; overflow: hidden; }
+  dl.duty dd.gaikin { margin-top: 12px; height: 168px; }
   .gaikin-scroll {
     height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
     font-weight: 500; font-size: .9rem; line-height: 1.7;
-  }
-  /* 続きがあるときだけ下端に出るフェード+▼ */
-  .gaikin-more {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    display: flex; justify-content: center; align-items: flex-end;
-    height: 26px; padding-bottom: 1px;
-    font-size: .65rem; color: var(--text-sub); pointer-events: none;
-    background: linear-gradient(to bottom, transparent, var(--surface) 75%);
   }
   #day-pane { will-change: transform; }
   #today-body { min-height: 308px; }
@@ -294,8 +316,7 @@
         <div class="day-nav">
           <button type="button" class="nav-arrow" id="btn-prev" aria-label="前の日を表示">‹</button>
           <span class="date-wrap">
-            <span class="today-date" id="today-date">–/–</span>
-            <input type="date" id="date-picker" aria-label="カレンダーで日付を選んで移動">
+            <button type="button" class="today-date" id="today-date" aria-label="カレンダーを開いて日付を選ぶ">–/–</button>
           </span>
           <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
         </div>
@@ -321,6 +342,17 @@
     <ul class="timeline" id="timeline"><li><span class="log-time">–</span><span class="log-level"></span><span>読み込み中…</span></li></ul>
   </section>
 </main>
+
+<!-- カレンダーポップアップ -->
+<div class="cal-backdrop" id="cal-backdrop" hidden></div>
+<div class="cal-pop" id="cal-pop" hidden role="dialog" aria-label="日付を選択">
+  <div class="cal-head">
+    <button type="button" id="cal-prev" aria-label="前の月">‹</button>
+    <span id="cal-title">–</span>
+    <button type="button" id="cal-next" aria-label="次の月">›</button>
+  </div>
+  <div class="cal-grid" id="cal-grid"></div>
+</div>
 
 <!-- ボトムシート -->
 <div class="sheet-backdrop" id="backdrop"></div>
@@ -422,11 +454,6 @@ function renderDay() {
     reg.textContent = "⚠ 未登録";
   }
 
-  // カレンダー(日付タップ)の現在値と移動可能範囲
-  const picker = $("date-picker");
-  picker.value = key;
-  picker.min = shiftDate(statusData.today, OFFSET_MIN);
-  picker.max = shiftDate(statusData.today, OFFSET_MAX);
 
   // タイトル行の右: 今日は配信バッジ、他の日は「今日に戻る」
   if (dayOffset === 0) {
@@ -460,20 +487,9 @@ function renderDay() {
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
     <dt class="gaikin-t">外勤</dt><dd class="gaikin">
-      <div class="gaikin-scroll" id="gaikin-scroll">${g.length ? g.map(esc).join("<br>") : "なし"}</div>
-      <span class="gaikin-more" id="gaikin-more" hidden>▼ 続きあり</span>
+      <div class="gaikin-scroll">${g.length ? g.map(esc).join("<br>") : "なし"}</div>
     </dd>
   </dl>`;
-
-  // 外勤が枠に収まりきらないときだけ「▼続きあり」を表示(最後まで見たら消す)
-  const sc = $("gaikin-scroll"), more = $("gaikin-more");
-  if (sc.scrollHeight > sc.clientHeight + 2) {
-    const update = () => {
-      more.hidden = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4;
-    };
-    sc.addEventListener("scroll", update, { passive: true });
-    update();
-  }
 }
 
 /* ── 日の切り替え(スライドアニメーション付き) ── */
@@ -632,18 +648,61 @@ $("btn-prev").addEventListener("click", () => swapDay(-1));
 $("btn-next").addEventListener("click", () => swapDay(1));
 $("btn-today").addEventListener("click", () => swapDay(-dayOffset));
 
-/* ── カレンダーで日付ジャンプ ── */
-const datePicker = $("date-picker");
-datePicker.addEventListener("click", () => {
-  try { datePicker.showPicker(); } catch (e) { /* 自動で開く環境では不要 */ }
-});
-datePicker.addEventListener("change", () => {
-  if (!datePicker.value || !statusData) return;
+/* ── カレンダーポップアップ(日付タップ→即ジャンプ&クローズ) ── */
+let calMonth = null;  // 表示中の月(1日のDate)
+
+function monthKey(d) { return d.getFullYear() * 12 + d.getMonth(); }
+
+function openCal() {
+  if (!statusData) return;
+  const cur = new Date(shiftDate(statusData.today, dayOffset) + "T00:00:00");
+  calMonth = new Date(cur.getFullYear(), cur.getMonth(), 1);
+  renderCal();
+  $("cal-backdrop").hidden = false;
+  $("cal-pop").hidden = false;
+}
+
+function closeCal() {
+  $("cal-backdrop").hidden = true;
+  $("cal-pop").hidden = true;
+}
+
+function renderCal() {
+  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  $("cal-title").textContent = `${y}年${m + 1}月`;
+  const min = shiftDate(statusData.today, OFFSET_MIN);
+  const max = shiftDate(statusData.today, OFFSET_MAX);
+  const curKey = shiftDate(statusData.today, dayOffset);
+  const startIdx = (new Date(y, m, 1).getDay() + 6) % 7;  // 月曜はじまり
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  let html = WD.map(w => `<span class="cal-wd">${w}</span>`).join("");
+  for (let i = 0; i < startIdx; i++) html += "<span></span>";
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = iso(new Date(y, m, d));
+    const dis = key < min || key > max;
+    const cls = ["cal-day", dis ? "dis" : "",
+                 key === statusData.today ? "today" : "",
+                 key === curKey ? "sel" : ""].join(" ");
+    html += `<button type="button" class="${cls}" data-key="${key}"${dis ? " disabled" : ""}>${d}</button>`;
+  }
+  $("cal-grid").innerHTML = html;
+  // 移動可能範囲の外の月へは進めない
+  $("cal-prev").disabled = monthKey(calMonth) <= monthKey(new Date(min + "T00:00:00"));
+  $("cal-next").disabled = monthKey(calMonth) >= monthKey(new Date(max + "T00:00:00"));
+}
+
+$("today-date").addEventListener("click", openCal);
+$("cal-backdrop").addEventListener("click", closeCal);
+$("cal-prev").addEventListener("click", () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1); renderCal(); });
+$("cal-next").addEventListener("click", () => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1); renderCal(); });
+$("cal-grid").addEventListener("click", (e) => {
+  const b = e.target.closest(".cal-day");
+  if (!b || b.disabled) return;
+  closeCal();  // タップした瞬間に閉じてジャンプ(確定ボタンなし)
   const diff = Math.round(
-    (new Date(datePicker.value + "T00:00:00") - new Date(statusData.today + "T00:00:00")) / 86400000
+    (new Date(b.dataset.key + "T00:00:00") - new Date(statusData.today + "T00:00:00")) / 86400000
   );
-  const target = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, diff));
-  if (target !== dayOffset) swapDay(target - dayOffset);
+  if (diff !== dayOffset) swapDay(diff - dayOffset);
 });
 
 let touchX = null, touchY = null;
