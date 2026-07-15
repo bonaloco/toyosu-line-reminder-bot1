@@ -110,14 +110,16 @@
   .reg-badge {
     display: inline-flex; align-items: center; justify-content: center;
     font-weight: 700; flex-shrink: 0;
-  }
-  .reg-badge.ok {
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--ok-bg); color: var(--ok); font-size: 1rem;
-  }
-  .reg-badge.warn {
     min-height: 28px; padding: 3px 12px; border-radius: 999px;
     background: var(--warn-bg); color: var(--warn); font-size: .78rem;
+  }
+  /* 日付はタップでカレンダー(透明なdate入力を重ねる) */
+  .date-wrap { position: relative; display: inline-flex; align-items: center; }
+  .today-date { border-bottom: 2px dotted var(--text-sub); padding-bottom: 1px; cursor: pointer; }
+  #date-picker {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; border: 0; padding: 0; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
   }
   .day-nav { display: flex; align-items: center; gap: 2px; margin-left: -10px; }
   .nav-arrow {
@@ -128,7 +130,8 @@
   .nav-arrow:active { color: var(--accent); }
   .today-date { font-size: 1.3rem; font-weight: 700; }
   .back-today {
-    min-height: 32px; padding: 3px 12px;
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 32px; padding: 3px 14px; line-height: 1;
     border-radius: 999px; border: none;
     background: var(--accent-weak); color: var(--accent);
     font-size: .8rem; font-weight: 700; cursor: pointer; flex-shrink: 0;
@@ -153,9 +156,18 @@
   dl.duty dd { font-weight: 600; }
   /* 外勤: 残り番との間に余白+固定高さの枠内でスクロール(カード高さを一定に保つ) */
   dl.duty dt.gaikin-t { margin-top: 12px; }
-  dl.duty dd.gaikin {
-    margin-top: 12px; font-weight: 500; font-size: .9rem; line-height: 1.7;
-    height: 168px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  dl.duty dd.gaikin { margin-top: 12px; position: relative; height: 168px; overflow: hidden; }
+  .gaikin-scroll {
+    height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    font-weight: 500; font-size: .9rem; line-height: 1.7;
+  }
+  /* 続きがあるときだけ下端に出るフェード+▼ */
+  .gaikin-more {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: center; align-items: flex-end;
+    height: 26px; padding-bottom: 1px;
+    font-size: .65rem; color: var(--text-sub); pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--surface) 75%);
   }
   #day-pane { will-change: transform; }
   #today-body { min-height: 308px; }
@@ -281,7 +293,10 @@
       <div class="today-head">
         <div class="day-nav">
           <button type="button" class="nav-arrow" id="btn-prev" aria-label="前の日を表示">‹</button>
-          <span class="today-date" id="today-date">–/–</span>
+          <span class="date-wrap">
+            <span class="today-date" id="today-date">–/–</span>
+            <input type="date" id="date-picker" aria-label="カレンダーで日付を選んで移動">
+          </span>
           <button type="button" class="nav-arrow" id="btn-next" aria-label="次の日を表示">›</button>
         </div>
         <span class="reg-badge" id="reg-badge" style="display:none"></span>
@@ -399,19 +414,19 @@ function renderDay() {
   badge.disabled = true;
   badge.onclick = null;
 
-  // 登録状況チップ(日付の右): 登録済みは✓のみ、未登録は「⚠ 未登録」
-  reg.style.display = "inline-flex";
+  // 未登録のときだけチップを表示(登録済みは週グリッドの✓で分かるため非表示)
   if (a) {
-    reg.className = "reg-badge ok";
-    reg.textContent = "✓";
-    reg.setAttribute("aria-label", "登録済み");
-    reg.title = "登録済み";
+    reg.style.display = "none";
   } else {
-    reg.className = "reg-badge warn";
+    reg.style.display = "inline-flex";
     reg.textContent = "⚠ 未登録";
-    reg.removeAttribute("aria-label");
-    reg.title = "";
   }
+
+  // カレンダー(日付タップ)の現在値と移動可能範囲
+  const picker = $("date-picker");
+  picker.value = key;
+  picker.min = shiftDate(statusData.today, OFFSET_MIN);
+  picker.max = shiftDate(statusData.today, OFFSET_MAX);
 
   // タイトル行の右: 今日は配信バッジ、他の日は「今日に戻る」
   if (dayOffset === 0) {
@@ -444,8 +459,21 @@ function renderDay() {
     <dt>院内</dt><dd>AM ${esc(a["AM院内"])} → PM ${esc(a["PM院内"])}</dd>
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
-    <dt class="gaikin-t">外勤</dt><dd class="gaikin">${g.length ? g.map(esc).join("<br>") : "なし"}</dd>
+    <dt class="gaikin-t">外勤</dt><dd class="gaikin">
+      <div class="gaikin-scroll" id="gaikin-scroll">${g.length ? g.map(esc).join("<br>") : "なし"}</div>
+      <span class="gaikin-more" id="gaikin-more" hidden>▼ 続きあり</span>
+    </dd>
   </dl>`;
+
+  // 外勤が枠に収まりきらないときだけ「▼続きあり」を表示(最後まで見たら消す)
+  const sc = $("gaikin-scroll"), more = $("gaikin-more");
+  if (sc.scrollHeight > sc.clientHeight + 2) {
+    const update = () => {
+      more.hidden = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4;
+    };
+    sc.addEventListener("scroll", update, { passive: true });
+    update();
+  }
 }
 
 /* ── 日の切り替え(スライドアニメーション付き) ── */
@@ -603,6 +631,20 @@ async function load() {
 $("btn-prev").addEventListener("click", () => swapDay(-1));
 $("btn-next").addEventListener("click", () => swapDay(1));
 $("btn-today").addEventListener("click", () => swapDay(-dayOffset));
+
+/* ── カレンダーで日付ジャンプ ── */
+const datePicker = $("date-picker");
+datePicker.addEventListener("click", () => {
+  try { datePicker.showPicker(); } catch (e) { /* 自動で開く環境では不要 */ }
+});
+datePicker.addEventListener("change", () => {
+  if (!datePicker.value || !statusData) return;
+  const diff = Math.round(
+    (new Date(datePicker.value + "T00:00:00") - new Date(statusData.today + "T00:00:00")) / 86400000
+  );
+  const target = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, diff));
+  if (target !== dayOffset) swapDay(target - dayOffset);
+});
 
 let touchX = null, touchY = null;
 const todayCard = $("today-card");
