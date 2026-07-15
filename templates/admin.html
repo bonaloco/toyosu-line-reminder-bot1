@@ -186,13 +186,19 @@
   dl.duty dd { font-weight: 600; }
   /* 外勤: 残り番との間に余白+固定高さの枠内でスクロール(カード高さを一定に保つ) */
   dl.duty dt.gaikin-t { margin-top: 12px; }
-  dl.duty dd.gaikin { margin-top: 12px; height: 168px; }
+  /* 外勤: 8件目が途中で切れて見える高さ。あふれ時のみ下端をぼかす */
+  dl.duty dd.gaikin { margin-top: 12px; height: 184px; position: relative; overflow: hidden; }
   .gaikin-scroll {
     height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
     font-weight: 500; font-size: .9rem; line-height: 1.7;
   }
+  .gaikin-fade {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 36px;
+    background: linear-gradient(to bottom, transparent, var(--surface) 88%);
+    pointer-events: none;
+  }
   #day-pane { will-change: transform; }
-  #today-body { min-height: 308px; }
+  #today-body { min-height: 324px; }
   .empty-note { color: var(--text-sub); text-align: center; padding: 16px 0; }
 
   /* ── ② 週グリッド ── */
@@ -487,9 +493,20 @@ function renderDay() {
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
     <dt class="gaikin-t">外勤</dt><dd class="gaikin">
-      <div class="gaikin-scroll">${g.length ? g.map(esc).join("<br>") : "なし"}</div>
+      <div class="gaikin-scroll" id="gaikin-scroll">${g.length ? g.map(esc).join("<br>") : "なし"}</div>
+      <span class="gaikin-fade" id="gaikin-fade" hidden></span>
     </dd>
   </dl>`;
+
+  // あふれているときだけ下端のぼかしを表示(最後までスクロールしたら消す)
+  const sc = $("gaikin-scroll"), fade = $("gaikin-fade");
+  if (sc.scrollHeight > sc.clientHeight + 2) {
+    const update = () => {
+      fade.hidden = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4;
+    };
+    sc.addEventListener("scroll", update, { passive: true });
+    update();
+  }
 }
 
 /* ── 日の切り替え(スライドアニメーション付き) ── */
