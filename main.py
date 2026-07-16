@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 import datetime
 import threading
 
@@ -90,23 +91,37 @@ def save_schedule(new_days):
     return data
 
 
+def _sheet_write_retry(action, desc, attempts=3):
+    """Sheetsへの書き込みを最大3回試す(一時的なAPIエラーで記録が消えるのを防ぐ)。
+    2026-07-16朝、配信ログの書き込みが一度きり失敗して
+    ダッシュボードが「未配信」表示のままになる障害が実際に発生した。"""
+    for i in range(attempts):
+        try:
+            action()
+            return True
+        except Exception as e:
+            sys.stderr.write("%s 失敗(%d回目): %s\n" % (desc, i + 1, e))
+            if i < attempts - 1:
+                time.sleep(2 * (i + 1))
+    return False
+
+
 def log_event(level, message):
     """log シートに1行追記(失敗してもbot本体は止めない)"""
-    try:
-        ws = _worksheet("log")
+    row = [now_jst().strftime("%Y-%m-%d %H:%M"), level, message]
+    _sheet_write_retry(
         # RAW指定: Sheetsが日時文字列を勝手に日付型に変換して表示形式を変えるのを防ぐ
-        ws.append_row([now_jst().strftime("%Y-%m-%d %H:%M"), level, message],
-                      value_input_option="RAW")
-    except Exception as e:
-        sys.stderr.write("ログ記録エラー: %s\n" % e)
+        lambda: _worksheet("log").append_row(row, value_input_option="RAW"),
+        "ログ記録",
+    )
 
 
 def mark_delivered(date_str):
     """配信済み日付をscheduleシートのB1セルに記録(配信判定の正式な記録)"""
-    try:
-        _worksheet("schedule").update("B1", [[date_str]])
-    except Exception as e:
-        sys.stderr.write("配信記録エラー: %s\n" % e)
+    _sheet_write_retry(
+        lambda: _worksheet("schedule").update("B1", [[date_str]]),
+        "配信記録",
+    )
 
 
 def load_delivered_date():
