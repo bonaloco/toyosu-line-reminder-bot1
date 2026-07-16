@@ -351,18 +351,33 @@ def ingest(days, source):
 
 
 # ── 定期実行(cron-job.orgから) ──────────────────────────
+def _time_is_today(time_str, today):
+    """ログの日時文字列が今日かどうか。
+    Sheetsに表示形式を変えられている可能性があるため、
+    2026-07-16 / 2026/07/16 / 7/16/2026(米国式)のどれでも判定できるようにする。"""
+    t = str(time_str).strip()
+    m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", t)          # 年/月/日
+    if m:
+        y, mo, d = m.groups()
+    else:
+        m = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})", t)      # 月/日/年(米国式)
+        if not m:
+            return False
+        mo, d, y = m.groups()
+    return "%04d-%02d-%02d" % (int(y), int(mo), int(d)) == today
+
+
 def delivered_today(logs=None):
     """今日すでに配信済みか。
-    正式にはscheduleシートB1の配信済み日付で判定する。
-    保険として、ログの時刻(Sheetsに書式を変えられている場合もあるので
-    スラッシュをハイフンに正規化)でも照合する。"""
+    正式にはscheduleシートB1の配信済み日付で判定し、
+    保険としてログの「配信」記録の日時でも照合する。"""
     today = now_jst().date().isoformat()
     if load_delivered_date() == today:
         return True
     if logs is None:
         logs = load_logs()
     return any(
-        l["level"] == "配信" and l["time"].replace("/", "-").startswith(today)
+        l["level"] == "配信" and _time_is_today(l["time"], today)
         for l in logs
     )
 
