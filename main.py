@@ -69,25 +69,37 @@ def _worksheet(name, rows="200", cols="10"):
 
 
 def load_schedule():
-    """{ "YYYY-MM-DD": {救急,AM院内,PM院内,AM医連,PM医連,残り番:[1st,2nd]} } を返す"""
+    """{ "YYYY-MM-DD": {救急,AM院内,PM院内,AM医連,PM医連,残り番:[1st,2nd]} } を返す。
+    読み込み失敗時はSheetsReadError。空辞書を返してしまうと「未登録」と
+    区別できず、誤警告(2026-09-01朝に実際に発生)やデータ消失につながる。"""
     try:
-        val = _worksheet("schedule").acell("A1").value
+        val = _sheet_read_retry(
+            lambda: _worksheet("schedule").acell("A1").value, "予定表読み込み"
+        )
         if val:
             data = json.loads(val)
             # 日付キー形式のみ受け付ける(旧・曜日形式のデータは無視)
             return {k: v for k, v in data.items() if DATE_RE.match(str(k))}
+        return {}
+    except SheetsReadError:
+        raise
     except Exception as e:
-        sys.stderr.write("Sheets読み込みエラー: %s\n" % e)
-    return {}
+        raise SheetsReadError("予定表の内容が読み取れません: %s" % e)
 
 
 def save_schedule(new_days):
-    """既存データとマージして保存。7日以上前の日付は削除する。"""
+    """既存データとマージして保存。7日以上前の日付は削除する。
+    既存データを読み込めなかった場合は保存せずエラーにする
+    (新データだけで上書きして残りの日付が消えるのを防ぐ)。"""
     data = load_schedule()
     data.update(new_days)
     cutoff = (now_jst().date() - datetime.timedelta(days=7)).isoformat()
     data = {d: a for d, a in sorted(data.items()) if d >= cutoff}
-    _worksheet("schedule").update("A1", [[json.dumps(data, ensure_ascii=False)]])
+    if not _sheet_write_retry(
+        lambda: _worksheet("schedule").update("A1", [[json.dumps(data, ensure_ascii=False)]]),
+        "予定表保存",
+    ):
+        raise RuntimeError("予定表の保存に失敗しました。時間をおいて再送してください")
     return data
 
 
@@ -104,6 +116,24 @@ def _sheet_write_retry(action, desc, attempts=3):
             if i < attempts - 1:
                 time.sleep(2 * (i + 1))
     return False
+
+
+class SheetsReadError(Exception):
+    """Sheetsからの読み込みが(リトライ後も)失敗したことを示す"""
+
+
+def _sheet_read_retry(action, desc, attempts=3):
+    """Sheetsからの読み込みを最大3回試す。
+    2026-09-01朝、予定表の読み込みが一度きり失敗し、データはあるのに
+    「予定が未登録」と誤った警告を配信する障害が実際に発生した。"""
+    for i in range(attempts):
+        try:
+            return action()
+        except Exception as e:
+            sys.stderr.write("%s 失敗(%d回目): %s\n" % (desc, i + 1, e))
+            if i == attempts - 1:
+                raise SheetsReadError("%s: %s" % (desc, e))
+            time.sleep(2 * (i + 1))
 
 
 def log_event(level, message):
@@ -125,22 +155,24 @@ def mark_delivered(date_str):
 
 
 def load_delivered_date():
-    try:
-        return _worksheet("schedule").acell("B1").value or ""
-    except Exception as e:
-        sys.stderr.write("配信記録読み込みエラー: %s\n" % e)
-        return ""
+    """B1の配信済み日付を返す。読み込み失敗時はSheetsReadError
+    (空文字を返すと「未配信」と誤判定し二重配信の恐れがあるため)"""
+    return _sheet_read_retry(
+        lambda: _worksheet("schedule").acell("B1").value, "配信記録読み込み"
+    ) or ""
 
 
 def load_logs(limit=30):
     try:
-        rows = _worksheet("log").get_all_values()
+        rows = _sheet_read_retry(
+            lambda: _worksheet("log").get_all_values(), "ログ読み込み"
+        )
         return [
             {"time": r[0], "level": r[1], "message": r[2]}
             for r in rows[-limit:] if len(r) >= 3
         ][::-1]  # 新しい順
-    except Exception as e:
-        sys.stderr.write("ログ読み込みエラー: %s\n" % e)
+    except SheetsReadError:
+        # 表示用・配信判定の保険用なので、読めない時は空扱いで続行する
         return []
 
 
@@ -399,11 +431,18 @@ def delivered_today(logs=None):
 
 def daily_reminder():
     today = now_jst().date().isoformat()
-    if delivered_today():
-        # ダッシュボードから手動配信済みの日は二重配信しない
-        log_event("確認", "本日(%s)は配信済みのため自動配信をスキップ" % today)
+    try:
+        if delivered_today():
+            # ダッシュボードから手動配信済みの日は二重配信しない
+            log_event("確認", "本日(%s)は配信済みのため自動配信をスキップ" % today)
+            return
+        assignment = load_schedule().get(today)
+    except SheetsReadError as e:
+        # 「未登録」と混同させる警告は出さず、一時エラーとして知らせる
+        sys.stderr.write("自動配信中断: %s\n" % e)
+        log_event("警告", "一時的なエラーで予定表を読み込めず、自動配信できませんでした")
+        push(GROUP_ID_B, "⚠ 一時的なエラーで本日(%s)の予定を読み込めず、リマインドを配信できませんでした。\n予定は消えていません。ダッシュボードの「未配信」をタップして手動配信してください。" % format_date_ja(today))
         return
-    assignment = load_schedule().get(today)
     if assignment:
         push(GROUP_ID_A, create_reminder(assignment))
         mark_delivered(today)
@@ -417,7 +456,12 @@ def weekly_check():
     """日曜19:00: 来週分が未登録なら催促(全消去は廃止)"""
     today = now_jst().date()
     next_monday = today + datetime.timedelta(days=(7 - today.weekday()))
-    schedule = load_schedule()
+    try:
+        schedule = load_schedule()
+    except SheetsReadError:
+        # 保険的なチェックなので誤った催促はせず、記録だけ残して次週に委ねる
+        log_event("警告", "一時的なエラーで予定表を読み込めず、来週分チェックをスキップ")
+        return
     has_next_week = any(
         (next_monday + datetime.timedelta(days=i)).isoformat() in schedule
         for i in range(7)
@@ -529,7 +573,12 @@ def handle_text(event):
     text = event.message.text
 
     if "今週の予定を確認" in text:
-        schedule = load_schedule()
+        try:
+            schedule = load_schedule()
+        except SheetsReadError:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="一時的なエラーで予定を読み込めませんでした。少し待ってからもう一度お試しください。"))
+            return
         today = now_jst().date().isoformat()
         upcoming = {d: a for d, a in schedule.items() if d >= today}
         msg = create_summary(upcoming) if upcoming else "登録済みの予定がありません。"
@@ -559,6 +608,13 @@ def _ingest_text_async(text):
 
 
 # ── 管理ダッシュボード ───────────────────────────────────
+@app.errorhandler(SheetsReadError)
+def _handle_sheets_read_error(e):
+    """ダッシュボードAPI用: 読み込み失敗を「データなし」と偽らず明示的に返す"""
+    sys.stderr.write("Sheets読み込みエラー応答: %s\n" % e)
+    return jsonify({"error": "一時的なエラーで予定表を読み込めませんでした。少し待ってから再読み込みしてください。"}), 503
+
+
 @app.route("/admin", methods=["GET"])
 def admin():
     _check_token(ADMIN_TOKEN)
