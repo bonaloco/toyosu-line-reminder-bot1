@@ -464,9 +464,22 @@ function renderDay() {
   // タイトル行の右: 今日は配信バッジ、他の日は「今日に戻る」
   if (dayOffset === 0) {
     back.style.display = "none";
+    const wd = new Date(key + "T00:00:00").getDay();
+    const isWeekend = (wd === 0 || wd === 6);
     if (statusData.delivered_today) {
       badge.style.display = "inline-flex";
       badge.className = "badge ok"; badge.textContent = "✓ 配信済み";
+    } else if (isWeekend) {
+      // 土日は自動配信なし(金曜にまとめて配信済み)。タップで臨時配信は可能
+      if (a) {
+        badge.style.display = "inline-flex";
+        badge.className = "badge ok tappable";
+        badge.textContent = "土日は配信なし — タップで臨時配信";
+        badge.disabled = false;
+        badge.onclick = deliverNow;
+      } else {
+        badge.style.display = "none";
+      }
     } else if (a) {
       badge.style.display = "inline-flex";
       badge.className = "badge warn tappable";
