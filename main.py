@@ -356,20 +356,36 @@ def format_date_ja(date_str):
     return "%d/%d(%s)" % (d.month, d.day, WEEKDAY_JA[d.weekday()])
 
 
-def create_reminder(assignment):
+def _format_assignment(assignment):
     first, second = (assignment.get("残り番") or ["未設定", "未設定"])[:2]
     return (
-        "【本日の担当者】\n\n"
         "救急(リハ診)：%s\n"
         "院内：AM %s → PM %s\n"
         "医連：AM %s → PM %s\n"
-        "残り番：1st %s ／ 2nd %s\n\n"
-        "よろしくお願いします！"
+        "残り番：1st %s ／ 2nd %s"
         % (assignment.get("救急", "未設定"),
            assignment.get("AM院内", "未設定"), assignment.get("PM院内", "未設定"),
            assignment.get("AM医連", "未設定"), assignment.get("PM医連", "未設定"),
            first, second)
     )
+
+
+def create_reminder(days, today):
+    """[(date, assignment), ...] → 配信文。当日は「本日」、それ以外は日付見出し
+    (金曜は土日の分もまとめて配信するため複数日になる)"""
+    blocks = []
+    for date, a in days:
+        title = "【本日の担当者】" if date == today else "【%sの担当者】" % format_date_ja(date)
+        blocks.append(title + "\n" + _format_assignment(a))
+    return "\n\n".join(blocks) + "\n\nよろしくお願いします！"
+
+
+def _reminder_targets(today_d):
+    """その日の配信対象日リスト。金曜は土日の分もまとめる(土日は自動配信を休止するため)"""
+    targets = [today_d.isoformat()]
+    if today_d.weekday() == 4:  # 金曜
+        targets += [(today_d + datetime.timedelta(days=i)).isoformat() for i in (1, 2)]
+    return targets
 
 
 def create_summary(days):
@@ -430,26 +446,39 @@ def delivered_today(logs=None):
 
 
 def daily_reminder():
-    today = now_jst().date().isoformat()
+    today_d = now_jst().date()
+    today = today_d.isoformat()
+    if today_d.weekday() >= 5:
+        # 土日は自動配信を休止(金曜朝にまとめて配信済み。LINE通数の節約も兼ねる)
+        log_event("確認", "本日(%s)は土日のため自動配信なし(金曜にまとめて配信済み)" % today)
+        return
     try:
         if delivered_today():
             # ダッシュボードから手動配信済みの日は二重配信しない
             log_event("確認", "本日(%s)は配信済みのため自動配信をスキップ" % today)
             return
-        assignment = load_schedule().get(today)
+        schedule = load_schedule()
     except SheetsReadError as e:
         # 「未登録」と混同させる警告は出さず、一時エラーとして知らせる
         sys.stderr.write("自動配信中断: %s\n" % e)
         log_event("警告", "一時的なエラーで予定表を読み込めず、自動配信できませんでした")
         push(GROUP_ID_B, "⚠ 一時的なエラーで本日(%s)の予定を読み込めず、リマインドを配信できませんでした。\n予定は消えていません。ダッシュボードの「未配信」をタップして手動配信してください。" % format_date_ja(today))
         return
-    if assignment:
-        push(GROUP_ID_A, create_reminder(assignment))
+    targets = _reminder_targets(today_d)
+    available = [(d, schedule[d]) for d in targets if d in schedule]
+    missing = [d for d in targets if d not in schedule]
+    if available:
+        push(GROUP_ID_A, create_reminder(available, today))
         mark_delivered(today)
-        log_event("配信", "本日(%s)の担当を配信" % today)
-    else:
-        push(GROUP_ID_B, "⚠ 本日(%s)の予定が未登録のため、リマインドを配信できませんでした。\nPDFを投稿するか、テキストで登録してください。" % format_date_ja(today))
-        log_event("警告", "本日(%s)の予定が未登録" % today)
+        log_event("配信", "%sの担当を配信" % "・".join(format_date_ja(d) for d, _ in available))
+    if missing:
+        miss_ja = "・".join(format_date_ja(d) for d in missing)
+        if available:
+            msg = "⚠ %sの予定が未登録のため、その分は今朝の配信に含められませんでした。\nPDFを投稿するか、テキストで登録してください。" % miss_ja
+        else:
+            msg = "⚠ %sの予定が未登録のため、リマインドを配信できませんでした。\nPDFを投稿するか、テキストで登録してください。" % miss_ja
+        push(GROUP_ID_B, msg)
+        log_event("警告", "%sの予定が未登録" % miss_ja)
 
 
 def weekly_check():
@@ -637,13 +666,17 @@ def api_status():
 def api_deliver():
     """ダッシュボードの「未配信」タップから、本日の担当を今すぐ配信する"""
     _check_token(ADMIN_TOKEN)
-    today = now_jst().date().isoformat()
-    assignment = load_schedule().get(today)
-    if not assignment:
+    today_d = now_jst().date()
+    today = today_d.isoformat()
+    schedule = load_schedule()
+    # 金曜は自動配信と同様に土日分もまとめる。土日の手動配信は当日分のみ(臨時用)
+    targets = _reminder_targets(today_d) if today_d.weekday() < 5 else [today]
+    available = [(d, schedule[d]) for d in targets if d in schedule]
+    if not available:
         return jsonify({"error": "本日の予定が未登録のため配信できません"}), 400
-    push(GROUP_ID_A, create_reminder(assignment))
+    push(GROUP_ID_A, create_reminder(available, today))
     mark_delivered(today)
-    log_event("配信", "本日(%s)の担当を配信(ダッシュボードから手動)" % today)
+    log_event("配信", "%sの担当を配信(ダッシュボードから手動)" % "・".join(format_date_ja(d) for d, _ in available))
     return jsonify({"ok": True})
 
 
