@@ -407,10 +407,75 @@ def push(group_id, text):
 
 
 # ── 取り込み共通処理 ─────────────────────────────────────
+def load_roster():
+    """「名簿」シート(A列=正表記, B列=別表記カンマ区切り, 1行目ヘッダー)を読む。
+    シートが無い・空・読めないときはNone(照合をスキップして従来動作)。
+    ※ _worksheetは無いシートを自動作成するので、初回アクセスで空タブができる"""
+    try:
+        rows = _sheet_read_retry(
+            lambda: _worksheet("名簿", rows="50", cols="3").get_all_values(), "名簿読み込み"
+        )
+    except SheetsReadError:
+        return None  # 名簿が読めなくても取り込み自体は止めない
+    canonical, aliases = set(), {}
+    for r in rows[1:]:  # 1行目はヘッダー
+        if not r or not str(r[0]).strip():
+            continue
+        name = str(r[0]).strip()
+        canonical.add(name)
+        if len(r) > 1 and str(r[1]).strip():
+            for alias in re.split(r"[、,\s]+", str(r[1]).strip()):
+                if alias and alias != name:
+                    aliases[alias] = name
+    return {"canonical": canonical, "aliases": aliases} if canonical else None
+
+
+def _match_roster(v, roster, corrections, unknowns):
+    """担当欄の1名分を名簿と照合する。
+    - 正表記に一致 → そのまま
+    - 別表記に一致 → 正表記へ自動修正(取り込みサマリに明示)
+    - どちらでもない → 変えずに警告(藤井/藤村のような近い名前への自動推測はしない)"""
+    if v == "未設定":
+        return v
+    m = re.match(r"^(.*?)([((]宿直[))])?$", v)
+    base, suffix = m.group(1), m.group(2) or ""
+    if base in roster["canonical"]:
+        return v
+    if base in roster["aliases"]:
+        fixed = roster["aliases"][base]
+        corrections.append("%s→%s" % (base, fixed))
+        return fixed + suffix
+    unknowns.append(base)
+    return v
+
+
+def _normalize_names(days):
+    """全担当欄(救急・院内・医連・残り番)を名簿照合し、(修正一覧, 未知名一覧)を返す。
+    外勤欄は施設名が混ざるため対象外"""
+    roster = load_roster()
+    if not roster:
+        return [], []
+    corrections, unknowns = [], []
+    for a in days.values():
+        for k in ("救急", "AM院内", "PM院内", "AM医連", "PM医連"):
+            a[k] = _match_roster(a[k], roster, corrections, unknowns)
+        a["残り番"] = [_match_roster(z, roster, corrections, unknowns)
+                     for z in a["残り番"]]
+    return sorted(set(corrections)), sorted(set(unknowns))
+
+
 def ingest(days, source):
+    corrections, unknowns = _normalize_names(days)
     save_schedule(days)
     log_event("成功", "%sから%d日分を取り込み" % (source, len(days)))
-    push(GROUP_ID_B, create_summary(days))
+    msg = create_summary(days)
+    if corrections:
+        msg += "\n\nℹ 表記を名簿に合わせて自動修正: %s" % "、".join(corrections)
+        log_event("確認", "表記を自動修正: %s" % "、".join(corrections))
+    if unknowns:
+        msg += "\n\n⚠ 名簿にない名前: %s\n(正しい場合は名簿シートへの追加をお願いします)" % "、".join(unknowns)
+        log_event("警告", "名簿にない名前: %s" % "、".join(unknowns))
+    push(GROUP_ID_B, msg)
 
 
 # ── 定期実行(cron-job.orgから) ──────────────────────────
