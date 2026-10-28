@@ -14,10 +14,11 @@ import time
 import datetime
 import threading
 
+import jpholiday
 import pytz
 from flask import Flask, request, abort, jsonify, render_template
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, FileMessage, TextSendMessage
 import gspread
 from google.oauth2.service_account import Credentials
@@ -372,7 +373,7 @@ def _format_assignment(assignment):
 
 def create_reminder(days, today):
     """[(date, assignment), ...] → 配信文。当日は「本日」、それ以外は日付見出し
-    (金曜は土日の分もまとめて配信するため複数日になる)"""
+    (土日祝の前の営業日はまとめて配信するため複数日になる)"""
     blocks = []
     for date, a in days:
         title = "【本日の担当者】" if date == today else "【%sの担当者】" % format_date_ja(date)
@@ -380,11 +381,19 @@ def create_reminder(days, today):
     return "\n\n".join(blocks) + "\n\nよろしくお願いします！"
 
 
+def _is_business_day(d):
+    """配信を行う日=平日かつ祝日(振替休日含む)でない日"""
+    return d.weekday() < 5 and not jpholiday.is_holiday(d)
+
+
 def _reminder_targets(today_d):
-    """その日の配信対象日リスト。金曜は土日の分もまとめる(土日は自動配信を休止するため)"""
+    """その日の配信対象日リスト。翌日以降が土日祝なら、次の営業日の前日まで
+    まとめる(金曜→土日、祝前日→祝日、GWのような連休も自動対応)"""
     targets = [today_d.isoformat()]
-    if today_d.weekday() == 4:  # 金曜
-        targets += [(today_d + datetime.timedelta(days=i)).isoformat() for i in (1, 2)]
+    nxt = today_d + datetime.timedelta(days=1)
+    while not _is_business_day(nxt):
+        targets.append(nxt.isoformat())
+        nxt += datetime.timedelta(days=1)
     return targets
 
 
@@ -513,9 +522,9 @@ def delivered_today(logs=None):
 def daily_reminder():
     today_d = now_jst().date()
     today = today_d.isoformat()
-    if today_d.weekday() >= 5:
-        # 土日は自動配信を休止(金曜朝にまとめて配信済み。LINE通数の節約も兼ねる)
-        log_event("確認", "本日(%s)は土日のため自動配信なし(金曜にまとめて配信済み)" % today)
+    if not _is_business_day(today_d):
+        # 土日祝は自動配信を休止(前営業日にまとめて配信済み。LINE通数の節約も兼ねる)
+        log_event("確認", "本日(%s)は土日祝のため自動配信なし(前営業日にまとめて配信済み)" % today)
         return
     try:
         if delivered_today():
@@ -533,7 +542,15 @@ def daily_reminder():
     available = [(d, schedule[d]) for d in targets if d in schedule]
     missing = [d for d in targets if d not in schedule]
     if available:
-        push(GROUP_ID_A, create_reminder(available, today))
+        try:
+            push(GROUP_ID_A, create_reminder(available, today))
+        except LineBotApiError as e:
+            # 上限超過(429)等。配信済みにはせず、理由をログに残す(超過時はLINEへの警告も送れない)
+            if e.status_code == 429:
+                log_event("警告", "LINEの月間送信上限超過のため配信できませんでした(毎月1日にリセット)")
+            else:
+                log_event("警告", "LINE送信エラーのため配信できませんでした: %s" % e)
+            return
         mark_delivered(today)
         log_event("配信", "%sの担当を配信" % "・".join(format_date_ja(d) for d, _ in available))
     if missing:
@@ -542,8 +559,11 @@ def daily_reminder():
             msg = "⚠ %sの予定が未登録のため、その分は今朝の配信に含められませんでした。\nPDFを投稿するか、テキストで登録してください。" % miss_ja
         else:
             msg = "⚠ %sの予定が未登録のため、リマインドを配信できませんでした。\nPDFを投稿するか、テキストで登録してください。" % miss_ja
-        push(GROUP_ID_B, msg)
         log_event("警告", "%sの予定が未登録" % miss_ja)
+        try:
+            push(GROUP_ID_B, msg)
+        except LineBotApiError:
+            pass  # 上限超過時は催促も送れない(上のログで追える)
 
 
 def weekly_check():
@@ -723,6 +743,7 @@ def api_status():
         "now": now_jst().strftime("%Y-%m-%d %H:%M"),
         "today": now_jst().date().isoformat(),
         "delivered_today": delivered_today(logs),
+        "business_day": _is_business_day(now_jst().date()),
         "logs": logs,
     })
 
@@ -734,12 +755,20 @@ def api_deliver():
     today_d = now_jst().date()
     today = today_d.isoformat()
     schedule = load_schedule()
-    # 金曜は自動配信と同様に土日分もまとめる。土日の手動配信は当日分のみ(臨時用)
-    targets = _reminder_targets(today_d) if today_d.weekday() < 5 else [today]
+    # 営業日は自動配信と同様に土日祝分もまとめる。土日祝の手動配信は当日分のみ(臨時用)
+    targets = _reminder_targets(today_d) if _is_business_day(today_d) else [today]
     available = [(d, schedule[d]) for d in targets if d in schedule]
     if not available:
         return jsonify({"error": "本日の予定が未登録のため配信できません"}), 400
-    push(GROUP_ID_A, create_reminder(available, today))
+    try:
+        push(GROUP_ID_A, create_reminder(available, today))
+    except LineBotApiError as e:
+        if e.status_code == 429:
+            msg = "LINEの月間送信上限超過のため配信できません(毎月1日にリセット)"
+        else:
+            msg = "LINE送信エラー: %s" % e
+        log_event("警告", msg)
+        return jsonify({"error": msg}), 502
     mark_delivered(today)
     log_event("配信", "%sの担当を配信(ダッシュボードから手動)" % "・".join(format_date_ja(d) for d, _ in available))
     return jsonify({"ok": True})

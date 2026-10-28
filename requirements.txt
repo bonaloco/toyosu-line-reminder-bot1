@@ -3,4 +3,5 @@ line-bot-sdk>=2,<3
 gspread
 google-auth
 pytz
+jpholiday
 anthropic
