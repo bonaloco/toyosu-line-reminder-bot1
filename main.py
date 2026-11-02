@@ -41,7 +41,7 @@ handler      = WebhookHandler(CHANNEL_SECRET or "unset")
 
 JST = pytz.timezone("Asia/Tokyo")
 
-FIELDS = ["救急", "AM院内", "PM院内", "AM医連", "PM医連"]
+FIELDS = ["救急", "リハ診", "AM院内", "PM院内", "AM医連", "PM医連"]
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -70,7 +70,8 @@ def _worksheet(name, rows="200", cols="10"):
 
 
 def load_schedule():
-    """{ "YYYY-MM-DD": {救急,AM院内,PM院内,AM医連,PM医連,残り番:[1st,2nd]} } を返す。
+    """{ "YYYY-MM-DD": {救急,リハ診,AM院内,PM院内,AM医連,PM医連,残り番:[1st,2nd]} } を返す。
+    リハ診はリハ前診察の列がある日のみ別の担当が入る(なければ"未設定"=救急が兼ねる)。
     読み込み失敗時はSheetsReadError。空辞書を返してしまうと「未登録」と
     区別できず、誤警告(2026-09-01朝に実際に発生)やデータ消失につながる。"""
     try:
@@ -189,7 +190,8 @@ PARSE_SCHEMA = {
                     "date":       {"type": "string", "description": "その行の日付 YYYY-MM-DD"},
                     "weekday":    {"type": "string", "enum": ["月", "火", "水", "木", "金", "土", "日"],
                                    "description": "表の曜日列に書かれている曜日"},
-                    "kyukyu":     {"type": "string", "description": "救急(リハ診)担当の医師名"},
+                    "kyukyu":     {"type": "string", "description": "「救急」列の医師名"},
+                    "riha":       {"type": "string", "description": "「リハ前診察」(リハ診)列の医師名。その列がない日や空欄は \"未設定\""},
                     "am_innai":   {"type": "string", "description": "AM院内担当の医師名"},
                     "pm_innai":   {"type": "string", "description": "PM院内担当の医師名"},
                     "am_iren":    {"type": "string", "description": "AM医連担当の医師名(AM:外来列の(医連-◯◯)表記)"},
@@ -202,7 +204,7 @@ PARSE_SCHEMA = {
                         "description": "外勤等列の各行をそのまま(例: 石川島ー磯崎、平日休ー山木・久保)。なければ空配列",
                     },
                 },
-                "required": ["date", "weekday", "kyukyu", "am_innai", "pm_innai",
+                "required": ["date", "weekday", "kyukyu", "riha", "am_innai", "pm_innai",
                              "am_iren", "pm_iren", "zanban_1st", "zanban_2nd", "gaikin"],
                 "additionalProperties": False,
             },
@@ -213,18 +215,21 @@ PARSE_SCHEMA = {
 }
 
 PARSE_PROMPT = """あなたは整形外科医局の週間予定表から当番情報を抽出する係です。
-この予定表から、日付ごとに次の6項目【だけ】を抽出してください:
+この予定表から、日付ごとに次の項目【だけ】を抽出してください:
 
 1. 救急 … 「救急」列の医師名
-2. AM院内 / PM院内 … それぞれの列の医師名
-3. AM医連 / PM医連 … 「AM:外来」「PM:外来」列の中に (医連-◯◯) や (医連–◯◯) の形で
+2. リハ診 … 「リハ前診察」(「リハ診」)という列がある日だけ、その列の医師名。
+   その列自体がない日や空欄の日は "未設定" とする。
+   救急列の医師名をリハ診に流用してはいけない(別の当番)
+3. AM院内 / PM院内 … それぞれの列の医師名
+4. AM医連 / PM医連 … 「AM:外来」「PM:外来」列の中に (医連-◯◯) や (医連–◯◯) の形で
    書かれている医師名(括弧と「医連」の文字は除き、医師名だけを抽出)
-4. 残り番 … 「残り番」列の【上から2つの人名】を1人目・2人目とする。
+5. 残り番 … 「残り番」列の【上から2つの人名】を1人目・2人目とする。
    - 「◯◯宿直」のような表記はそのまま含めてよい
    - 「◯◯PRP」のように医師名の後ろに処置名が付いている場合は、
      処置名を除いた医師名を採用する(例: 古屋PRP → 古屋)
    - 「PM◯◯」のような3人目以降の記載は無視する
-5. 外勤等 … 「外勤等」列(一番右)の各行を、書かれているまま1行ずつ抽出する
+6. 外勤等 … 「外勤等」列(一番右)の各行を、書かれているまま1行ずつ抽出する
    (例: 「石川島ー磯崎」「平日休ー山木・久保」「PM池田ー藤井」)。
    マーカーや色の情報は無視してよい
 
@@ -313,7 +318,7 @@ def _validate_and_convert(days):
     result = {}
     for date, d in zip(dates, days):
         values = [_clean_name(d.get(k, "")) for k in
-                  ("kyukyu", "am_innai", "pm_innai", "am_iren", "pm_iren",
+                  ("kyukyu", "riha", "am_innai", "pm_innai", "am_iren", "pm_iren",
                    "zanban_1st", "zanban_2nd")]
         for v in values:
             # 防御: 医師名として異常な値(長文・改行=患者情報などの混入疑い)は破棄
@@ -324,9 +329,10 @@ def _validate_and_convert(days):
             if len(g) > 30 or "\n" in g:
                 raise ValueError("外勤として不正な値を検出: %s…" % g[:10])
         result[date] = {
-            "救急":  values[0], "AM院内": values[1], "PM院内": values[2],
-            "AM医連": values[3], "PM医連": values[4],
-            "残り番": [values[5], values[6]],
+            "救急":  values[0], "リハ診": values[1],
+            "AM院内": values[2], "PM院内": values[3],
+            "AM医連": values[4], "PM医連": values[5],
+            "残り番": [values[6], values[7]],
             "外勤": [g for g in gaikin if g],
         }
     return result
@@ -357,15 +363,25 @@ def format_date_ja(date_str):
     return "%d/%d(%s)" % (d.month, d.day, WEEKDAY_JA[d.weekday()])
 
 
+def _riha_of(assignment):
+    """リハ診が救急と別の担当として登録されていればその名前、なければNone。
+    (リハ前診察の列がない日=未設定の日は、従来どおり救急がリハ診を兼ねる)"""
+    riha = assignment.get("リハ診") or "未設定"
+    return riha if riha != "未設定" else None
+
+
 def _format_assignment(assignment):
     first, second = (assignment.get("残り番") or ["未設定", "未設定"])[:2]
-    return (
-        "救急(リハ診)：%s\n"
+    riha = _riha_of(assignment)
+    if riha:
+        head = "救急：%s\nリハ診：%s\n" % (assignment.get("救急", "未設定"), riha)
+    else:
+        head = "救急(リハ診)：%s\n" % assignment.get("救急", "未設定")
+    return head + (
         "院内：AM %s → PM %s\n"
         "医連：AM %s → PM %s\n"
         "残り番：1st %s ／ 2nd %s"
-        % (assignment.get("救急", "未設定"),
-           assignment.get("AM院内", "未設定"), assignment.get("PM院内", "未設定"),
+        % (assignment.get("AM院内", "未設定"), assignment.get("PM院内", "未設定"),
            assignment.get("AM医連", "未設定"), assignment.get("PM医連", "未設定"),
            first, second)
     )
@@ -403,9 +419,11 @@ def create_summary(days):
     for date in sorted(days):
         a = days[date]
         z = (a.get("残り番") or ["未設定", "未設定"])[:2]
+        riha = _riha_of(a)
+        kyukyu = "救急:%s リハ診:%s" % (a.get("救急"), riha) if riha else "救急:%s" % a.get("救急")
         lines.append(
-            "%s\n 救急:%s 院内:%s→%s\n 医連:%s→%s 残り番:%s/%s"
-            % (format_date_ja(date), a.get("救急"), a.get("AM院内"), a.get("PM院内"),
+            "%s\n %s 院内:%s→%s\n 医連:%s→%s 残り番:%s/%s"
+            % (format_date_ja(date), kyukyu, a.get("AM院内"), a.get("PM院内"),
                a.get("AM医連"), a.get("PM医連"), z[0], z[1])
         )
     return "\n".join(lines)
@@ -459,15 +477,16 @@ def _match_roster(v, roster, corrections, unknowns):
 
 
 def _normalize_names(days):
-    """全担当欄(救急・院内・医連・残り番)を名簿照合し、(修正一覧, 未知名一覧)を返す。
+    """全担当欄(救急・リハ診・院内・医連・残り番)を名簿照合し、(修正一覧, 未知名一覧)を返す。
     外勤欄は施設名が混ざるため対象外"""
     roster = load_roster()
     if not roster:
         return [], []
     corrections, unknowns = [], []
     for a in days.values():
-        for k in ("救急", "AM院内", "PM院内", "AM医連", "PM医連"):
-            a[k] = _match_roster(a[k], roster, corrections, unknowns)
+        for k in ("救急", "リハ診", "AM院内", "PM院内", "AM医連", "PM医連"):
+            if k in a:
+                a[k] = _match_roster(a[k], roster, corrections, unknowns)
         a["残り番"] = [_match_roster(z, roster, corrections, unknowns)
                      for z in a["残り番"]]
     return sorted(set(corrections)), sorted(set(unknowns))
