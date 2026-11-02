@@ -366,7 +366,10 @@
   <div class="grip"></div>
   <h3 id="sheet-title">–</h3>
   <form id="edit-form">
-    <div class="field"><label for="f-救急">救急(リハ診)</label><input id="f-救急" autocomplete="off"></div>
+    <div class="zanban-row">
+      <div class="field"><label for="f-救急">救急</label><input id="f-救急" autocomplete="off"></div>
+      <div class="field"><label for="f-リハ診">リハ診(別の人の時だけ)</label><input id="f-リハ診" autocomplete="off" placeholder="救急と同じなら空欄"></div>
+    </div>
     <div class="zanban-row">
       <div class="field"><label for="f-AM院内">AM院内</label><input id="f-AM院内" autocomplete="off"></div>
       <div class="field"><label for="f-PM院内">PM院内</label><input id="f-PM院内" autocomplete="off"></div>
@@ -395,7 +398,7 @@
 <script>
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const WD = ["月","火","水","木","金","土","日"];
-const FIELDS = ["救急","AM院内","PM院内","AM医連","PM医連"];
+const FIELDS = ["救急","リハ診","AM院内","PM院内","AM医連","PM医連"];
 let schedule = {};
 let editingDate = null;
 let statusData = null;   // /api/status の最新結果
@@ -500,8 +503,14 @@ function renderDay() {
   }
   const z = a["残り番"] || ["未設定","未設定"];
   const g = a["外勤"] || [];
+  // リハ診が救急と別の担当として登録されている日だけ行を分ける
+  const riha = (a["リハ診"] && a["リハ診"] !== "未設定") ? a["リハ診"] : null;
+  const kyukyuRows = riha
+    ? `<dt>救急</dt><dd>${esc(a["救急"])}</dd>
+    <dt>リハ診</dt><dd>${esc(riha)}</dd>`
+    : `<dt>救急(リハ診)</dt><dd>${esc(a["救急"])}</dd>`;
   body.innerHTML = `<dl class="duty">
-    <dt>救急(リハ診)</dt><dd>${esc(a["救急"])}</dd>
+    ${kyukyuRows}
     <dt>院内</dt><dd>AM ${esc(a["AM院内"])} → PM ${esc(a["PM院内"])}</dd>
     <dt>医連</dt><dd>AM ${esc(a["AM医連"])} → PM ${esc(a["PM医連"])}</dd>
     <dt>残り番</dt><dd>1st ${esc(z[0])} ／ 2nd ${esc(z[1])}</dd>
@@ -603,6 +612,8 @@ function openSheet(date) {
   const a = schedule[date] || {};
   const z = a["残り番"] || ["", ""];
   for (const f of FIELDS) $("f-" + f).value = a[f] || "";
+  // リハ診は「未設定=救急と同じ人」なので、編集欄では空欄にして見せる
+  if ($("f-リハ診").value === "未設定") $("f-リハ診").value = "";
   $("f-残1").value = z[0] || "";
   $("f-残2").value = z[1] || "";
   $("f-外勤").value = (a["外勤"] || []).join("\n");
