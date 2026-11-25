@@ -705,6 +705,24 @@ def handle_text(event):
         sys.stderr.write("Group ID = %s\n" % group)
     text = event.message.text
 
+    # 「今日の予定を確認」: 毎朝の配信と同じ形式で当日分だけを返信する
+    # (返信は月間送信上限の対象外なので、上限超過で配信が止まっている間も使える)
+    if "今日の予定を確認" in text:
+        try:
+            schedule = load_schedule()
+        except SheetsReadError:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="一時的なエラーで予定を読み込めませんでした。少し待ってからもう一度お試しください。"))
+            return
+        today = now_jst().date().isoformat()
+        a = schedule.get(today)
+        if a:
+            msg = "【本日の担当者】\n" + _format_assignment(a)
+        else:
+            msg = "本日(%s)の予定は未登録です。\nPDFを投稿するか、テキストで登録してください。" % format_date_ja(today)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
+        return
+
     if "今週の予定を確認" in text:
         try:
             schedule = load_schedule()
